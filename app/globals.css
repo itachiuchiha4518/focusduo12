@@ -1,26 +1,31 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #f6fbff;
+  --card: #ffffff;
+  --muted: #6b7280;
+  --primary: #0b61ff;
+  --accent: #00c2a8;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html, body, #__next { height: 100%; }
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: linear-gradient(180deg, #f6fbff 0%, #ffffff 100%);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  color: #0f172a;
 }
+
+.container { max-width: 1100px; margin-left:auto; margin-right:auto; padding-left:1.25rem; padding-right:1.25rem; }
+
+.header { display:flex; align-items:center; justify-content:space-between; padding:1rem 0; }
+
+.kicker { font-size:0.85rem; color:var(--muted); letter-spacing:0.02em; }
+
+.hero-card { background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0.8)); border-radius:12px; padding:1.5rem; box-shadow:0 10px 30px rgba(9,30,66,0.06); }
+
+.btn-primary { background: linear-gradient(90deg,var(--primary), #0060ff); color:white; border-radius:8px; padding:0.5rem 0.9rem; font-weight:600; }
+.bg-calm { background:#eef7ff; }
+.text-primary { color:var(--primary); }
+.shadow-card { box-shadow: 0 6px 24px rgba(12,34,63,0.08); }
