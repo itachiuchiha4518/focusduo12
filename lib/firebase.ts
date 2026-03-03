@@ -1,9 +1,26 @@
 // lib/firebase.ts
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut as firebaseSignOut } from "firebase/auth";
 import {
-  getFirestore, doc, getDoc, setDoc, collection, addDoc, query, where, getDocs, deleteDoc, updateDoc, onSnapshot
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup as firebaseSignInWithPopup,
+  signOut as firebaseSignOut,
+  onAuthStateChanged as firebaseOnAuthStateChanged
+} from "firebase/auth";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+  collection,
+  addDoc,
+  query,
+  where,
+  getDocs,
+  deleteDoc,
+  updateDoc,
+  onSnapshot
 } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -17,7 +34,7 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-try { getAnalytics(app); } catch(e) { /* ignore SSR analytics errors */ }
+try { getAnalytics(app); } catch (e) { /* analytics only in browser */ }
 
 const auth = getAuth(app);
 const provider = new GoogleAuthProvider();
@@ -27,12 +44,13 @@ export {
   app,
   auth,
   provider,
-  signInWithPopup,
-  firebaseSignOut,
+  firebaseSignInWithPopup as signInWithPopup,
+  firebaseSignOut as signOut,
+  firebaseOnAuthStateChanged as onAuthStateChanged,
   db,
   doc,
-  getDoc,
   setDoc,
+  getDoc,
   collection,
   addDoc,
   query,
