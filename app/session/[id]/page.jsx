@@ -1,16 +1,15 @@
-// app/session/[id]/page.tsx
+// app/session/[id]/page.jsx
 'use client'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { db, doc, getDoc, updateDoc } from '../../../lib/firebase'
-import { usePathname } from 'next/navigation'
 const JitsiRoom = dynamic(() => import('../../../components/JitsiRoom'), { ssr: false })
 
 export default function SessionPage(){
   const pathname = usePathname()
   const id = pathname.split('/').pop() || ''
-  const [session, setSession] = useState<any>(null)
+  const [session, setSession] = useState(null)
 
   useEffect(()=>{
     if(!id) return
@@ -21,7 +20,6 @@ export default function SessionPage(){
     load()
   },[id])
 
-  // mark lastUpdated on unload - simple client touch
   useEffect(()=>{
     const onUnload = async () => {
       if(!id) return
@@ -35,14 +33,12 @@ export default function SessionPage(){
 
   return (
     <div className="container mt-6">
-      <div className="bg-white rounded shadow p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-lg font-bold">Session</div>
-            <div className="text-sm text-slate-500">{session?.exam} • {session?.subject}</div>
-          </div>
-          <div className="text-sm">Participants: {session?.participants?.length || 1}</div>
+      <div className="card p-4 flex justify-between">
+        <div>
+          <div className="text-lg font-bold">Session</div>
+          <div className="muted">{session?.exam} • {session?.subject}</div>
         </div>
+        <div className="muted">Participants: {session?.participants?.length || 1}</div>
       </div>
 
       <div className="mt-4">
