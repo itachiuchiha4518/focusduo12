@@ -1,6 +1,5 @@
-// app/layout.tsx
-import './globals.css'
-import { ReactNode } from 'react'
+// app/layout.jsx
+import '../styles/globals.css'
 import Header from '../components/Header'
 
 export const metadata = {
@@ -8,7 +7,7 @@ export const metadata = {
   description: 'Study together. Stay consistent.'
 }
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body>
