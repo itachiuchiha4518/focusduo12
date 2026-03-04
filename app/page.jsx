@@ -1,4 +1,4 @@
-// app/page.tsx
+// app/page.jsx
 import Hero from '../components/Hero'
 import Features from '../components/Features'
 
