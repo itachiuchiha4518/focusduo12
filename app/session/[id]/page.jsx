@@ -33,15 +33,15 @@ export default function SessionPage(){
 
   return (
     <div className="container mt-6">
-      <div className="card p-4 flex justify-between">
+      <div className="card p-4" style={{display:'flex', justifyContent:'space-between'}}>
         <div>
-          <div className="text-lg font-bold">Session</div>
+          <div style={{fontSize:16, fontWeight:700}}>Session</div>
           <div className="muted">{session?.exam} • {session?.subject}</div>
         </div>
         <div className="muted">Participants: {session?.participants?.length || 1}</div>
       </div>
 
-      <div className="mt-4">
+      <div style={{marginTop:12}}>
         <JitsiRoom roomId={id} displayName={session?.displayName || 'Student'} />
       </div>
     </div>
