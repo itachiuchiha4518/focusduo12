@@ -1,12 +1,12 @@
-// components/JitsiRoom.tsx
+// components/JitsiRoom.jsx
 'use client'
 import { useEffect, useRef } from 'react'
 
-export default function JitsiRoom({ roomId, displayName }: { roomId: string, displayName?: string }){
-  const ref = useRef<HTMLDivElement | null>(null)
+export default function JitsiRoom({ roomId, displayName }) {
+  const ref = useRef(null)
 
-  useEffect(()=>{
-    if(!roomId || !ref.current) return
+  useEffect(() => {
+    if (!roomId || !ref.current) return
     const domain = 'meet.jit.si'
     const roomName = `FocusDuo_${roomId}`
     const iframe = document.createElement('iframe')
@@ -17,8 +17,8 @@ export default function JitsiRoom({ roomId, displayName }: { roomId: string, dis
     iframe.style.border = '0'
     ref.current.innerHTML = ''
     ref.current.appendChild(iframe)
-    return () => { if(ref.current) ref.current.innerHTML = '' }
+    return () => { if (ref.current) ref.current.innerHTML = '' }
   }, [roomId, displayName])
 
-  return <div ref={ref} className="rounded bg-black/5" />
+  return <div ref={ref} className="jitsi-wrapper" />
 }
