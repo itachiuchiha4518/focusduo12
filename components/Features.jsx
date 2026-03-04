@@ -8,15 +8,15 @@ export default function Features(){
   ]
   return (
     <section id="features" className="features container">
-      <div className="features-head">
+      <div className="features-head" style={{textAlign:'center'}}>
         <div className="kicker">Why FocusDuo</div>
         <h2 className="features-title">Built to make studying habitual</h2>
       </div>
-      <div className="features-grid">
+      <div className="features-grid" style={{marginTop:18}}>
         {features.map(f=>(
-          <div key={f.t} className="feature card">
-            <div className="feature-title">{f.t}</div>
-            <div className="feature-desc">{f.d}</div>
+          <div key={f.t} className="feature card" style={{padding:14}}>
+            <div style={{color:'#64748b', fontSize:13}}>{f.t}</div>
+            <div style={{marginTop:8}}>{f.d}</div>
           </div>
         ))}
       </div>
