@@ -20,5 +20,5 @@ export default function JitsiRoom({ roomId, displayName }) {
     return () => { if (ref.current) ref.current.innerHTML = '' }
   }, [roomId, displayName])
 
-  return <div ref={ref} className="jitsi-wrapper" />
+  return <div ref={ref} style={{borderRadius:8, overflow:'hidden'}} />
 }
