@@ -1,8 +1,8 @@
-// app/join/page.tsx
+// app/join/page.jsx
 'use client'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { auth, db, collection, addDoc, query, where, getDocs, deleteDoc, doc, addDoc as addDocRaw } from '../../lib/firebase'
+import { auth, onAuthStateChanged, db, collection, addDoc, query, where, getDocs, deleteDoc, doc } from '../../lib/firebase'
 
 export default function JoinPage(){
   const params = useSearchParams()
@@ -10,15 +10,15 @@ export default function JoinPage(){
   const exam = params.get('exam') || ''
   const subject = params.get('subject') || ''
   const router = useRouter()
-  const [user, setUser] = useState<any>(null)
+  const [user, setUser] = useState(null)
   const [status, setStatus] = useState('idle')
 
   useEffect(()=>{
-    const unsub = auth.onAuthStateChanged(u => {
+    const unsub = onAuthStateChanged(auth, u => {
       if(!u) router.push('/')
       else setUser(u)
     })
-    return () => unsub()
+    return () => unsub && unsub()
   },[])
 
   useEffect(()=>{ if(user && mode && exam && subject) startMatch() }, [user, mode, exam, subject])
@@ -30,15 +30,15 @@ export default function JoinPage(){
     if(mode === 'one-on-one'){
       const q = query(collection(db,'queues'), where('mode','==','one-on-one'), where('exam','==', exam), where('subject','==', subject))
       const snap = await getDocs(q)
-      let partnerDoc: any = null
+      let partnerDoc = null
       snap.forEach(s => {
         const d = s.data()
         if(d.uid !== user.uid && !partnerDoc) partnerDoc = { id: s.id, data: d }
       })
       if(partnerDoc){
         const session = await addDoc(collection(db,'sessions'), { participants: [user.uid, partnerDoc.data.uid], exam, subject, mode: 'one-on-one', startTime: new Date().toISOString(), status: 'active' })
-        try{ await deleteDoc(doc(db,'queues', partnerDoc.id)) }catch(e){}
-        try{ await deleteDoc(doc(db,'queues', qRef.id)) }catch(e){}
+        try{ await deleteDoc(doc(db,'queues', partnerDoc.id)) } catch(e){}
+        try{ await deleteDoc(doc(db,'queues', qRef.id)) } catch(e){}
         router.push(`/session/${session.id}`)
         return
       }
@@ -47,7 +47,7 @@ export default function JoinPage(){
     if(mode === 'group'){
       const q = query(collection(db,'queues'), where('mode','==','group'), where('exam','==', exam), where('subject','==', subject))
       const snap = await getDocs(q)
-      const participants: any[] = []
+      const participants = []
       snap.forEach(s => { if(participants.length < 4) participants.push({ id: s.id, uid: s.data().uid }) })
       if(!participants.find(p=>p.uid===user.uid)) participants.push({ id: qRef.id, uid: user.uid })
       if(participants.length >= 2){
@@ -63,11 +63,11 @@ export default function JoinPage(){
 
   return (
     <div className="container mt-8">
-      <div className="bg-white p-6 rounded shadow">
-        <h3 className="font-semibold">Matchmaking</h3>
-        <div className="mt-3">Mode: {mode} • Exam: {exam} • Subject: {subject}</div>
-        <div className="mt-3">Status: {status}</div>
-        <div className="mt-4"><a href="/dashboard" className="px-3 py-1 border rounded">Back to dashboard</a></div>
+      <div className="card p-4">
+        <h3>Matchmaking</h3>
+        <div>Mode: {mode} • Exam: {exam} • Subject: {subject}</div>
+        <div>Status: {status}</div>
+        <div className="mt-4"><a href="/dashboard" className="btn">Back to dashboard</a></div>
       </div>
     </div>
   )
