@@ -3,80 +3,125 @@
 import { useEffect, useRef, useState } from 'react'
 
 export default function JitsiRoom({ roomId, displayName }) {
-  const ref = useRef(null)
+  const containerRef = useRef(null)
+  const apiRef = useRef(null)
   const [status, setStatus] = useState('idle') // idle | loading | ready | error
-  const [errorMsg, setErrorMsg] = useState(null)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!roomId || !ref.current) return
+    if (!roomId || !containerRef.current) return
+    let mounted = true
     setStatus('loading')
-    setErrorMsg(null)
+    setError(null)
 
-    const domain = 'meet.jit.si'
-    const roomName = `FocusDuo_${roomId}`
-
-    // Build iframe
-    const iframe = document.createElement('iframe')
-    iframe.src = `https://${domain}/${roomName}#userInfo.displayName="${encodeURIComponent(displayName || 'Student')}"`;
-    iframe.allow = 'camera; microphone; fullscreen; display-capture; autoplay'
-    iframe.allowFullscreen = true
-    iframe.style.width = '100%'
-    iframe.style.height = '640px'
-    iframe.style.border = '0'
-    iframe.referrerPolicy = 'no-referrer-when-downgrade'
-
-    // Clear previous content and append
-    ref.current.innerHTML = ''
-    ref.current.appendChild(iframe)
-
-    // Wait for iframe to load (best-effort)
-    const onLoad = () => {
-      setStatus('ready')
-      // console.log('Jitsi iframe loaded')
-    }
-    const onError = (e) => {
-      setStatus('error')
-      setErrorMsg('Unable to load video. Try again or check camera permissions.')
-      console.error('Jitsi iframe error', e)
+    // Load external_api.js if not already loaded
+    function loadScript() {
+      return new Promise((resolve, reject) => {
+        if (window.JitsiMeetExternalAPI) return resolve(window.JitsiMeetExternalAPI)
+        const existing = document.getElementById('jitsi-external-api')
+        if (existing) {
+          existing.addEventListener('load', () => {
+            if (window.JitsiMeetExternalAPI) resolve(window.JitsiMeetExternalAPI)
+            else reject(new Error('Jitsi script loaded but API not available'))
+          })
+          existing.addEventListener('error', () => reject(new Error('Failed to load jitsi script')))
+          return
+        }
+        const script = document.createElement('script')
+        script.id = 'jitsi-external-api'
+        script.src = 'https://meet.jit.si/external_api.js'
+        script.async = true
+        script.onload = () => {
+          if (window.JitsiMeetExternalAPI) resolve(window.JitsiMeetExternalAPI)
+          else reject(new Error('Jitsi API not found on window after load'))
+        }
+        script.onerror = () => reject(new Error('Failed to load jitsi external_api.js'))
+        document.head.appendChild(script)
+      })
     }
 
-    iframe.addEventListener('load', onLoad)
-    iframe.addEventListener('error', onError)
+    async function startJitsi() {
+      try {
+        const Jitsi = await loadScript()
+        if (!mounted) return
+        const domain = 'meet.jit.si'
+        const options = {
+          roomName: `FocusDuo_${roomId}`,
+          parentNode: containerRef.current,
+          userInfo: { displayName: displayName || 'Student' },
+          configOverwrite: {
+            startWithAudioMuted: false,
+            startWithVideoMuted: false,
+            disableDeepLinking: true
+          },
+          interfaceConfigOverwrite: {
+            // minimal interface
+            TOOLBAR_BUTTONS: [
+              'microphone', 'camera', 'chat', 'tileview', 'hangup'
+            ]
+          }
+        }
 
-    // Failsafe: if still not ready in 12s, show helpful error
-    const timeout = setTimeout(() => {
-      if (status !== 'ready') {
+        // dispose previous if any
+        if (apiRef.current) {
+          try { apiRef.current.dispose() } catch(e){}
+          apiRef.current = null
+        }
+
+        apiRef.current = new Jitsi(domain, options)
+
+        apiRef.current.addEventListener('videoConferenceJoined', () => {
+          if (!mounted) return
+          setStatus('ready')
+        })
+        apiRef.current.addEventListener('readyToClose', () => {
+          // session end
+          if (!mounted) return
+          setStatus('ended')
+        })
+
+      } catch (e) {
+        console.error('Jitsi start error', e)
+        setError(String(e.message || e))
         setStatus('error')
-        setErrorMsg('Video failed to load. If you are on a restricted network (school/ISP), Jitsi may be blocked.')
       }
-    }, 12000)
+    }
+
+    startJitsi()
 
     return () => {
-      clearTimeout(timeout)
+      mounted = false
       try {
-        iframe.removeEventListener('load', onLoad)
-        iframe.removeEventListener('error', onError)
-      } catch(e){}
-      if (ref.current) ref.current.innerHTML = ''
+        if (apiRef.current) {
+          apiRef.current.dispose()
+          apiRef.current = null
+        }
+      } catch (e) {
+        console.warn('error disposing jitsi', e)
+      }
+      if (containerRef.current) containerRef.current.innerHTML = ''
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, displayName])
 
   return (
     <div>
       <div style={{marginBottom:8}}>
         {status === 'loading' && <div style={{color:'#374151'}}>Loading video…</div>}
-        {status === 'ready' && <div style={{color:'#10b981'}}>Video ready</div>}
-        {status === 'error' && <div style={{color:'#ef4444'}}>Video error: {errorMsg || 'Unknown'}</div>}
+        {status === 'ready' && <div style={{color:'#10b981'}}>Video running</div>}
+        {status === 'ended' && <div style={{color:'#64748b'}}>Session ended</div>}
+        {status === 'error' && <div style={{color:'#ef4444'}}>Video error: {error || 'Unknown'}</div>}
       </div>
-      <div ref={ref} style={{borderRadius:8, overflow:'hidden', background:'#000'}} />
+
+      <div ref={containerRef} style={{width:'100%', height: '640px', borderRadius:8, overflow:'hidden', background:'#000'}} />
+
       {status === 'error' && (
         <div style={{marginTop:10}}>
-          <div className="muted">Troubleshooting:</div>
+          <div className="muted">Quick checks</div>
           <ul style={{marginTop:6}}>
-            <li>Try a different network (mobile data vs Wi-Fi).</li>
-            <li>Ensure camera/microphone permissions are allowed for the browser.</li>
-            <li>Open <code>https://meet.jit.si</code> directly — if that also fails, Jitsi is blocked.</li>
+            <li>Open <a href="https://meet.jit.si" target="_blank" rel="noreferrer">meet.jit.si</a> on the same browser. Does it load and ask camera permission?</li>
+            <li>Try switching networks (mobile data vs Wi-Fi) — some networks block Jitsi.</li>
+            <li>Allow Camera & Microphone in the browser (browser prompt). If you blocked, go into site settings and re-enable.</li>
+            <li>If on iOS Safari, try Chrome (iOS Safari sometimes blocks embedded web RTC in iframes). Use desktop Chrome if possible for a test.</li>
           </ul>
         </div>
       )}
