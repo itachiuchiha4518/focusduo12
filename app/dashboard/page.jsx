@@ -1,7 +1,7 @@
 // app/dashboard/page.jsx
 'use client'
 import { useEffect, useState } from 'react'
-import { auth, onAuthStateChanged, db, doc, getDoc, updateDoc } from '../../lib/firebase'
+import { auth, onAuthStateChanged, db, doc, getDoc, setDoc, updateDoc } from '../../lib/firebase'
 import { useRouter } from 'next/navigation'
 
 export default function DashboardPage(){
@@ -16,7 +16,6 @@ export default function DashboardPage(){
       if(!u) router.push('/')
       else {
         setUser(u)
-        // create/merge user doc
         const userRef = doc(db, 'users', u.uid)
         const snap = await getDoc(userRef)
         const base = {
@@ -38,7 +37,6 @@ export default function DashboardPage(){
           setProfile(base)
         } else {
           const data = snap.data()
-          await updateDoc(userRef, { ...base, ...data })
           setProfile({ ...base, ...data })
         }
       }
@@ -61,13 +59,13 @@ export default function DashboardPage(){
 
   return (
     <div className="container mt-8">
-      <div className="card p-4 flex justify-between">
+      <div className="card p-4" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
         <div>
-          <div className="profile-name">{profile.name}</div>
+          <div style={{fontSize:18, fontWeight:600}}>{profile.name}</div>
           <div className="muted">{profile.email}</div>
         </div>
-        <div className="text-right">
-          <div>🔥 Current streak: {profile.currentStreak || 0} days</div>
+        <div style={{textAlign:'right'}}>
+          <div>🔥 Current streak: {profile.currentStreak || 0}</div>
           <div>Total hours: {profile.totalHours || 0}</div>
           <div>Level: {profile.level || 'Beginner'}</div>
           <div>Plan: {profile.plan}</div>
@@ -86,7 +84,7 @@ export default function DashboardPage(){
           <button onClick={saveProfile} className="btn">Save</button>
         </div>
 
-        <div className="mt-4 flex gap-2">
+        <div style={{marginTop:12, display:'flex', gap:8}}>
           <button onClick={()=>join('one-on-one')} className="btn">Join 1-on-1</button>
           <button onClick={()=>join('group')} className="btn">Join group</button>
         </div>
