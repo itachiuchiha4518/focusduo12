@@ -1,10 +1,10 @@
 // app/layout.jsx
-import '../styles/globals.css'
+import './globals.css'
 import Header from '../components/Header'
 
 export const metadata = {
   title: 'FocusDuo',
-  description: 'Study together. Stay consistent.'
+  description: 'Study together. Stay consistent.',
 }
 
 export default function RootLayout({ children }) {
