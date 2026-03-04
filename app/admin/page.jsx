@@ -40,15 +40,19 @@ export default function AdminPage(){
 
   return (
     <div className="container mt-8">
-      <h2>Admin</h2>
-      <div className="card p-4">
+      <h2 style={{fontWeight:700}}>Admin</h2>
+      <div className="card p-4" style={{marginTop:12}}>
         <h3>Pending payments</h3>
-        <div>
+        <div style={{marginTop:8}}>
           {payments.filter(p=>p.status!=='approved').map(p=>(
-            <div key={p.id} className="payment-row">
-              <div>UID: {p.uid}</div>
-              <div>Plan: {p.planType} • Txn: {p.transactionId}</div>
-              <button onClick={()=>approve(p)} className="btn small">Approve</button>
+            <div key={p.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0'}}>
+              <div>
+                <div style={{fontSize:13}}>UID: {p.uid}</div>
+                <div className="muted" style={{fontSize:13}}>Plan: {p.planType} • Txn: {p.transactionId}</div>
+              </div>
+              <div>
+                <button onClick={()=>approve(p)} className="btn small">Approve</button>
+              </div>
             </div>
           ))}
           {payments.filter(p=>p.status!=='approved').length===0 && <div className="muted">No pending payments</div>}
