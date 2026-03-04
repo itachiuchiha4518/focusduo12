@@ -37,8 +37,8 @@ export default function JoinPage(){
       })
       if(partnerDoc){
         const session = await addDoc(collection(db,'sessions'), { participants: [user.uid, partnerDoc.data.uid], exam, subject, mode: 'one-on-one', startTime: new Date().toISOString(), status: 'active' })
-        try{ await deleteDoc(doc(db,'queues', partnerDoc.id)) } catch(e){}
-        try{ await deleteDoc(doc(db,'queues', qRef.id)) } catch(e){}
+        try{ await deleteDoc(doc(db,'queues', partnerDoc.id)) }catch(e){}
+        try{ await deleteDoc(doc(db,'queues', qRef.id)) }catch(e){}
         router.push(`/session/${session.id}`)
         return
       }
@@ -67,8 +67,8 @@ export default function JoinPage(){
         <h3>Matchmaking</h3>
         <div>Mode: {mode} • Exam: {exam} • Subject: {subject}</div>
         <div>Status: {status}</div>
-        <div className="mt-4"><a href="/dashboard" className="btn">Back to dashboard</a></div>
+        <div style={{marginTop:12}}><a href="/dashboard" className="btn">Back to dashboard</a></div>
       </div>
     </div>
   )
-}
+                                                                 }
