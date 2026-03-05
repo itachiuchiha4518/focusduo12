@@ -1,11 +1,11 @@
 'use client'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { auth, onAuthStateChanged, db, collection, addDoc, query, where, getDocs, deleteDoc, doc } from '../../lib/firebase'
+import { auth, onAuthStateChanged, db, collection, addDoc, query, where, getDocs, deleteDoc, doc, getDoc, updateDoc } from '../../lib/firebase'
 
 export default function JoinPage(){
   const params = useSearchParams()
-  const mode = params.get('mode') || ''
+  const mode = params.get('mode') || ''           // 'one-on-one' or 'group'
   const exam = params.get('exam') || ''
   const subject = params.get('subject') || ''
   const router = useRouter()
@@ -16,6 +16,7 @@ export default function JoinPage(){
   const [queueId, setQueueId] = useState(null)
   const queueDocRef = useRef(null)
   const pollRef = useRef(null)
+  const currentMonthKey = new Date().toISOString().slice(0,7) // YYYY-MM
 
   useEffect(()=>{
     const unsub = onAuthStateChanged(auth, u => {
@@ -35,13 +36,42 @@ export default function JoinPage(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, mode, exam, subject])
 
-  async function createQueueDoc(){
+  async function loadUserDoc(){
+    try {
+      const uSnap = await getDoc(doc(db,'users', user.uid))
+      if (uSnap.exists()) return uSnap.data()
+      return null
+    } catch(e){ console.error('loadUserDoc', e); return null }
+  }
+
+  function planIsPro(plan){
+    return plan && plan.toLowerCase() === 'pro'
+  }
+
+  async function checkFreeLimits(userDoc){
+    // returns {ok: boolean, reason: string|null}
+    const plan = userDoc?.plan || 'free'
+    if (planIsPro(plan)) return { ok: true }
+    // free user: check monthly usage
+    const monthKey = currentMonthKey
+    const mu = userDoc?.monthlyUsage || {}
+    const m = mu[monthKey] || { oneOnOne: 0, group: 0 }
+    if (mode === 'one-on-one') {
+      if ((m.oneOnOne || 0) >= 10) return { ok: false, reason: 'Free plan limit reached: 10 one-on-one sessions per month. Upgrade to Pro.' }
+    } else if (mode === 'group') {
+      if ((m.group || 0) >= 20) return { ok: false, reason: 'Free plan limit reached: 20 group sessions per month. Upgrade to Pro.' }
+    }
+    return { ok: true }
+  }
+
+  async function createQueueDoc(plan){
     try {
       const qRef = await addDoc(collection(db, 'queues'), {
         uid: user.uid,
         exam,
         subject,
         mode,
+        plan: plan || 'free',
         createdAt: new Date().toISOString()
       })
       queueDocRef.current = qRef
@@ -65,60 +95,69 @@ export default function JoinPage(){
     } catch(e){ console.warn('removeQueueDoc failed', e) }
   }
 
-  async function checkForMatch(){
+  async function incrementUserUsage(uid, modeToInc){
     try {
-      if (mode === 'one-on-one') {
-        const q = query(collection(db, 'queues'),
-                        where('mode', '==', 'one-on-one'),
-                        where('exam','==', exam),
-                        where('subject','==', subject))
-        const snap = await getDocs(q)
-        let partner = null
-        snap.forEach(s => {
-          if (s.data().uid !== user.uid && !partner) partner = { id: s.id, ...s.data() }
+      const uRef = doc(db,'users', uid)
+      const uSnap = await getDoc(uRef)
+      if (!uSnap.exists()) return
+      const uData = uSnap.data()
+      const mu = uData.monthlyUsage || {}
+      const monthKey = currentMonthKey
+      const m = mu[monthKey] || { oneOnOne: 0, group: 0 }
+      if (modeToInc === 'one-on-one') m.oneOnOne = (m.oneOnOne || 0) + 1
+      if (modeToInc === 'group') m.group = (m.group || 0) + 1
+      mu[monthKey] = m
+      await updateDoc(uRef, {
+        monthlyUsage: mu,
+        sessionsCompleted: (uData.sessionsCompleted || 0) + 1,
+        totalHours: (uData.totalHours || 0) // totalHours not incremented here; can be updated post-session
+      })
+    } catch(e){
+      console.warn('incrementUserUsage failed', e)
+    }
+  }
+
+  async function checkForMatchAndCreateSession(plan){
+    try {
+      // Query earliest other queue with same exam, subject, mode, and same plan
+      const q = query(
+        collection(db, 'queues'),
+        where('mode', '==', mode),
+        where('exam', '==', exam),
+        where('subject', '==', subject),
+        where('plan', '==', plan)
+      )
+      const snap = await getDocs(q)
+      let partner = null
+      // find earliest other (first in list) - getDocs does not guarantee order, but generally returns inserts; safe-enough for MVP
+      snap.forEach(s => {
+        if (s.data().uid !== user.uid && !partner) partner = { id: s.id, ...s.data() }
+      })
+
+      if (partner) {
+        // Create session doc
+        const sessionRef = await addDoc(collection(db, 'sessions'), {
+          participants: [user.uid, partner.uid],
+          exam, subject, mode,
+          plan,
+          startTime: new Date().toISOString(),
+          status: 'active'
         })
-        if (partner) {
-          const sessionRef = await addDoc(collection(db, 'sessions'), {
-            participants: [user.uid, partner.uid],
-            exam, subject, mode: 'one-on-one',
-            startTime: new Date().toISOString(),
-            status: 'active'
-          })
-          // remove partner queue and self
-          try { await deleteDoc(doc(db,'queues', partner.id)) } catch(e){ console.warn(e) }
-          try { if (queueDocRef.current) await deleteDoc(doc(db,'queues', queueDocRef.current.id)) } catch(e){ console.warn(e) }
-          stopPolling()
-          router.push(`/session/${sessionRef.id}`)
-          return true
-        }
-      } else if (mode === 'group') {
-        const q = query(collection(db,'queues'),
-                        where('mode','==','group'),
-                        where('exam','==', exam),
-                        where('subject','==', subject))
-        const snap = await getDocs(q)
-        const participants = []
-        snap.forEach(s => {
-          if (participants.length < 4) participants.push({ id: s.id, uid: s.data().uid })
-        })
-        if (!participants.find(p => p.uid === user.uid)) {
-          participants.push({ id: queueDocRef.current?.id, uid: user.uid })
-        }
-        if (participants.length >= 2) {
-          const sessionRef = await addDoc(collection(db,'sessions'), {
-            participants: participants.map(p=>p.uid),
-            exam, subject, mode: 'group',
-            startTime: new Date().toISOString(),
-            status: 'active'
-          })
-          for (const p of participants) {
-            try { await deleteDoc(doc(db,'queues', p.id)) } catch(e) {}
-          }
-          stopPolling()
-          router.push(`/session/${sessionRef.id}`)
-          return true
-        }
+
+        // Remove partner queue + self queue
+        try { if (partner.id) await deleteDoc(doc(db,'queues', partner.id)) } catch(e){ console.warn(e) }
+        try { if (queueDocRef.current) await deleteDoc(doc(db,'queues', queueDocRef.current.id)) } catch(e){ console.warn(e) }
+
+        // increment usage for both users
+        await incrementUserUsage(user.uid, mode)
+        await incrementUserUsage(partner.uid, mode)
+
+        // stop polling and navigate to session
+        stopPolling()
+        router.push(`/session/${sessionRef.id}`)
+        return true
       }
+
       return false
     } catch(e){
       console.error('checkForMatch error', e)
@@ -128,13 +167,13 @@ export default function JoinPage(){
     }
   }
 
-  function startPolling(){
+  function startPolling(plan){
     if (pollRef.current) return
     pollRef.current = setInterval(async () => {
       if (status === 'error') return
-      const matched = await checkForMatch()
+      const matched = await checkForMatchAndCreateSession(plan)
       if (!matched) setStatus('waiting')
-    }, 3000)
+    }, 2000) // faster matching for priority
   }
 
   function stopPolling(){
@@ -144,17 +183,33 @@ export default function JoinPage(){
   async function startMatch(){
     setStatus('joining')
     setErrorMsg(null)
-    const qRef = await createQueueDoc()
+    const uDoc = await loadUserDoc()
+    if (!uDoc) {
+      setErrorMsg('User profile missing. Please try reloading or contact admin.')
+      return setStatus('error')
+    }
+    const plan = uDoc.plan || 'free'
+    // check free limits
+    const limits = await checkFreeLimits(uDoc)
+    if (!limits.ok) {
+      setErrorMsg(limits.reason)
+      return setStatus('error')
+    }
+
+    // create queue
+    const qRef = await createQueueDoc(plan)
     if (!qRef) return
     setStatus('waiting')
-    const matchedNow = await checkForMatch()
+    // immediately check for existing partner
+    const matchedNow = await checkForMatchAndCreateSession(plan)
     if (matchedNow) return
-    startPolling()
+    // otherwise poll
+    startPolling(plan)
   }
 
   return (
     <div className="container mt-8">
-      <div className="card p-4" style={{maxWidth:700}}>
+      <div className="card p-4" style={{maxWidth:720}}>
         <h3 style={{marginBottom:8}}>Matchmaking</h3>
         <div>Mode: {mode} • Exam: {exam} • Subject: {subject}</div>
         <div style={{marginTop:8}}>Status: {status}</div>
