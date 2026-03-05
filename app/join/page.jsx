@@ -1,4 +1,4 @@
-// app/join/page.jsx  (OVERWRITE)
+// app/join/page.jsx  — OVERWRITE this file completely
 'use client'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
@@ -13,35 +13,78 @@ import {
   getDocs,
   deleteDoc,
   doc,
-  runTransaction
+  runTransaction,
+  onSnapshot,
+  getDoc,
+  setDoc
 } from '../../lib/firebase'
+
+// Helper: ensure minimal user doc exists (so new signups won't stall dashboard)
+async function ensureUserDoc(uid, userMeta){
+  try {
+    const uRef = doc(db,'users', uid)
+    const uSnap = await getDoc(uRef)
+    if (!uSnap.exists()){
+      await setDoc(uRef, {
+        name: userMeta.displayName || userMeta.email || 'Student',
+        email: userMeta.email || '',
+        plan: 'free',
+        totalStudyHours: 0,
+        sessionsCompleted: 0,
+        currentStreak: 0,
+        commitmentScore: 0,
+        level: 'Beginner',
+        accountStatus: 'active',
+        monthlyUsage: {},
+        holds: {}
+      })
+    }
+  } catch(e){
+    console.warn('ensureUserDoc failed', e)
+  }
+}
 
 export default function JoinPage(){
   const params = useSearchParams()
-  // normalize incoming values to lowercase trimmed strings
-  const mode = (params.get('mode') || 'one-on-one').trim().toLowerCase()
-  const exam = (params.get('exam') || 'jee').trim().toLowerCase()
-  const subject = (params.get('subject') || 'physics').trim().toLowerCase()
-  const router = useRouter()
+  const rawMode = params.get('mode') || 'one-on-one'
+  const rawExam = params.get('exam') || 'jee'
+  const rawSubject = params.get('subject') || 'physics'
+  // normalize
+  const mode = rawMode.trim().toLowerCase()
+  const exam = rawExam.trim().toLowerCase()
+  const subject = rawSubject.trim().toLowerCase()
 
+  const router = useRouter()
   const [user, setUser] = useState(null)
   const [status, setStatus] = useState('idle')
   const [errorMsg, setErrorMsg] = useState(null)
   const queueRef = useRef(null)
+  const sessionListenerRef = useRef(null)
 
   useEffect(()=>{
-    const unsub = onAuthStateChanged(auth, u => {
-      if (!u) router.push('/') 
-      else setUser(u)
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (!u) router.push('/')
+      else {
+        setUser(u)
+        // ensure user doc exists so dashboard doesn't hang on new users
+        await ensureUserDoc(u.uid, u)
+      }
     })
     return () => unsub && unsub()
   },[router])
+
+  useEffect(()=>{
+    // cleanup on unmount
+    return ()=> {
+      if (sessionListenerRef.current) sessionListenerRef.current()
+    }
+  },[])
 
   async function createQueue(){
     setStatus('creating-queue')
     setErrorMsg(null)
     try {
-      // store normalized values (lowercase)
+      // create queue with normalized fields
       const qRef = await addDoc(collection(db,'queues'), {
         uid: user.uid,
         name: user.displayName || user.email || 'Student',
@@ -52,6 +95,21 @@ export default function JoinPage(){
       })
       queueRef.current = qRef
       setStatus('queued')
+
+      // realtime listen for any session that has this user as participant
+      const sQ = query(collection(db,'sessions'), where('participants','array-contains', user.uid))
+      sessionListenerRef.current = onSnapshot(sQ, (snap) => {
+        snap.forEach(d => {
+          const data = d.data()
+          if (!data) return
+          if (data.status === 'matched' || data.status === 'active' ) {
+            // redirect to session for the first matching doc
+            window.location.href = `/session/${d.id}`
+          }
+        })
+      })
+
+      // immediately attempt match (fast)
       await tryMatch()
     } catch(e){
       console.error('createQueue error', e)
@@ -67,6 +125,7 @@ export default function JoinPage(){
         await deleteDoc(doc(db,'queues', queueRef.current.id))
         queueRef.current = null
       }
+      if (sessionListenerRef.current) { sessionListenerRef.current(); sessionListenerRef.current = null }
       setStatus('idle')
       router.push('/dashboard')
     } catch(e){
@@ -76,7 +135,7 @@ export default function JoinPage(){
     }
   }
 
-  // single-queue FIFO with normalized fields
+  // FIFO single queue match — normalized strings used (lowercase)
   async function tryMatch(){
     setStatus('matching')
     try {
@@ -97,6 +156,7 @@ export default function JoinPage(){
         return false
       }
 
+      // oldest-first in JS
       candidates.sort((a,b)=> {
         const ta = a.data.createdAt ? new Date(a.data.createdAt).getTime() : 0
         const tb = b.data.createdAt ? new Date(b.data.createdAt).getTime() : 0
@@ -115,13 +175,13 @@ export default function JoinPage(){
             const selfSnap = await t.get(selfRef)
             if (!selfSnap.exists()) throw new Error('self-gone')
 
-            // read user docs (reads first)
+            // read both users before writes
             const u1Ref = doc(db,'users', partnerData.uid)
             const u2Ref = doc(db,'users', user.uid)
             await t.get(u1Ref)
             await t.get(u2Ref)
 
-            // create session doc with participantNames
+            // create session with both participant names
             const sessionRef = doc(collection(db,'sessions'))
             t.set(sessionRef, {
               participants: [ partnerData.uid, user.uid ],
@@ -143,7 +203,7 @@ export default function JoinPage(){
           if (sessionId) {
             setStatus('matched')
             queueRef.current = null
-            // go to session page
+            // redirect initiator — other client has session listener and will redirect too
             window.location.href = `/session/${sessionId}`
             return true
           }
@@ -182,4 +242,4 @@ export default function JoinPage(){
       </div>
     </div>
   )
-}
+          }
