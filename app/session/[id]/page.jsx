@@ -1,6 +1,7 @@
+// app/session/[id]/page.jsx
 'use client'
 import { usePathname, useRouter } from 'next/navigation'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { db, doc, getDoc, setDoc, collection, runTransaction } from '../../../lib/firebase'
 import { auth, onAuthStateChanged } from '../../../lib/firebase'
@@ -11,9 +12,10 @@ export default function SessionPage(){
   const pathname = usePathname()
   const id = pathname?.split('/').pop() || ''
   const [session, setSession] = useState(null)
-  const [loading, setLoading] = useState(true)
   const [user, setUser] = useState(null)
   const [joined, setJoined] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(()=>{
     const unsub = onAuthStateChanged(auth, u => setUser(u || null))
@@ -21,181 +23,108 @@ export default function SessionPage(){
   },[])
 
   useEffect(()=>{
-    if(!id) return
+    if (!id) return
     let mounted = true
-    const load = async ()=>{
+    const load = async () => {
       try {
         const snap = await getDoc(doc(db,'sessions', id))
         if (snap.exists()) {
-          if(mounted) setSession(snap.data())
+          if (mounted) setSession(snap.data())
         } else {
-          // create minimal reserved session if missing
-          await setDoc(doc(db,'sessions', id), {
-            participants: [],
-            exam: null,
-            subject: null,
-            mode: 'one-on-one',
-            startTime: new Date().toISOString(),
-            status: 'reserved',
-            reserved: true,
-            holdExpiry: new Date(new Date().getTime() + 10*60000).toISOString(),
-            chargesFinalized: false
-          })
-          const newSnap = await getDoc(doc(db,'sessions', id))
-          if (newSnap.exists() && mounted) setSession(newSnap.data())
+          setError('Session not found')
         }
       } catch(e){
-        console.error('load session error', e)
+        console.error('load session', e)
+        setError(String(e.message || e))
       } finally {
-        if(mounted) setLoading(false)
+        if (mounted) setLoading(false)
       }
     }
     load()
+    // realtime updates would be nicer — add onSnapshot later if you want
     return ()=> { mounted = false }
   },[id])
 
-  // MARK JOINED & FINALIZE — FIXED: READ ALL DOCS FIRST, THEN WRITE
-  async function markJoinedAndFinalize(){
-    if(!user) return alert('Sign in first')
+  // Start meeting: transaction that flips status -> 'active' and records presence for this user
+  async function startMeeting(){
+    setError(null)
+    if (!user) return alert('Sign in required')
     try {
       await runTransaction(db, async (t) => {
-        // 1) read session doc first
         const sRef = doc(db,'sessions', id)
         const sSnap = await t.get(sRef)
         if (!sSnap.exists()) throw new Error('session-missing')
         const sData = sSnap.data()
 
-        // 2) read all participant user docs BEFORE any writes
-        const participantUids = (sData.participants || []).slice()
-        const userSnaps = {}
-        for (const uid of participantUids) {
-          const uRef = doc(db,'users', uid)
-          const uSnap = await t.get(uRef)
-          userSnaps[uid] = { ref: uRef, snap: uSnap }
+        // if session already active, just record presence
+        if (sData.status === 'active') {
+          const presRef = doc(collection(db, `sessions/${id}/presence`))
+          t.set(presRef, { uid: user.uid, joinedAt: new Date().toISOString() })
+          return
         }
 
-        // Now we have read session + all users — no writes yet
-
-        // 3) check hold expiry
-        const now = new Date()
-        if (sData.holdExpiry && new Date(sData.holdExpiry) < now) {
-          // hold expired -> prepare writes: set session expired and release holds
-          // Build updated holds for each user
-          const monthKey = new Date().toISOString().slice(0,7)
-          for (const uid of participantUids) {
-            const uSnap = userSnaps[uid].snap
-            if (!uSnap.exists()) continue
-            const uData = uSnap.data() || {}
-            const holds = uData.holds || {}
-            const h = holds[monthKey] || { oneOnOne:0, group:0 }
-            if (sData.mode === 'one-on-one') h.oneOnOne = Math.max(0, (h.oneOnOne || 0) - 1)
-            else h.group = Math.max(0, (h.group || 0) - 1)
-            holds[monthKey] = h
-            t.update(userSnaps[uid].ref, { holds })
-          }
-          t.update(sRef, { status: 'expired', reserved: false })
-          // finally throw to indicate expired so client can redirect/requeue
-          throw new Error('hold-expired')
+        // if matched -> set active and create presence
+        if (sData.status === 'matched') {
+          t.update(sRef, { status: 'active', startedAt: new Date().toISOString() })
+          const presRef = doc(collection(db, `sessions/${id}/presence`))
+          t.set(presRef, { uid: user.uid, joinedAt: new Date().toISOString() })
+          return
         }
 
-        // 4) finalize charges: move holds -> monthlyUsage and increment sessionsCompleted
-        const monthKey = new Date().toISOString().slice(0,7)
-        for (const uid of participantUids) {
-          const uSnap = userSnaps[uid].snap
-          if (!uSnap.exists()) continue
-          const uData = uSnap.data() || {}
-          const holds = uData.holds || {}
-          const mu = uData.monthlyUsage || {}
-          const h = (holds[monthKey] || { oneOnOne:0, group:0 })
-          const m = (mu[monthKey] || { oneOnOne:0, group:0 })
-
-          if (sData.mode === 'one-on-one') {
-            m.oneOnOne = (m.oneOnOne || 0) + (h.oneOnOne || 0)
-            h.oneOnOne = 0
-          } else {
-            m.group = (m.group || 0) + (h.group || 0)
-            h.group = 0
-          }
-          mu[monthKey] = m
-          holds[monthKey] = h
-
-          t.update(userSnaps[uid].ref, {
-            monthlyUsage: mu,
-            holds,
-            sessionsCompleted: (uData.sessionsCompleted || 0) + 1
-          })
-        }
-
-        // 5) update session doc to active + chargesFinalized
-        t.update(sRef, { chargesFinalized: true, reserved: false, status: 'active', startedAt: new Date().toISOString() })
-
-        // 6) create presence doc for current user (write)
-        const presRef = doc(collection(db, `sessions/${id}/presence`))
-        t.set(presRef, { uid: user.uid, joinedAt: new Date().toISOString() })
-
-        // All writes are now after all reads (compliant)
+        throw new Error('invalid-session-state')
       })
 
-      setJoined(true)
-      // reload session state
+      // reload session and set joined
       const sSnap2 = await getDoc(doc(db,'sessions', id))
       if (sSnap2.exists()) setSession(sSnap2.data())
+      setJoined(true)
     } catch(e){
-      console.error('markJoinedAndFinalize', e)
-      if ((String(e.message||'')).includes('hold-expired')) {
-        alert('This session hold expired before anyone joined. Please requeue or try again.')
-        router.push('/dashboard')
-      } else {
-        alert('Failed to join session: ' + (e.message || e))
-      }
+      console.error('startMeeting error', e)
+      setError(String(e.message || e))
+      alert('Failed to start meeting: ' + (e.message || e))
     }
   }
 
-  function goFullScreen(){
-    const el = document.querySelector('[data-jitsi-container]')
-    if (!el) {
-      const c = document.querySelector('.jitsi-container')
-      if (c && c.requestFullscreen) c.requestFullscreen()
-      return
-    }
-    if (el.requestFullscreen) el.requestFullscreen()
-  }
+  if (loading) return <div style={{padding:20}}>Loading session...</div>
+  if (error) return <div style={{padding:20, color:'red'}}>Error: {error}</div>
+  if (!session) return <div style={{padding:20}}>Session data missing</div>
 
-  if(!id) return <div className="container p-6">Invalid session id</div>
+  const partnerNames = (session.participantNames || []).filter(n => n && n !== (user?.displayName || user?.email) )
+  const partnerLabel = partnerNames.length ? partnerNames.join(', ') : (session.participantNames && session.participantNames.length ? session.participantNames[0] : 'Partner')
 
   return (
-    <div className="container mt-6">
-      <div className="card p-4" style={{display:'flex', justifyContent:'space-between'}}>
-        <div>
-          <div style={{fontSize:16, fontWeight:700}}>Session</div>
-          <div className="muted">{session?.exam || '—'} • {session?.subject || '—'}</div>
-        </div>
-        <div className="muted">Participants: {session?.participants?.length || 1}</div>
+    <div style={{padding:20}}>
+      <div style={{marginBottom:12}}>
+        <h2>Session</h2>
+        <div>{session.exam} • {session.subject}</div>
+        <div style={{marginTop:8}}>Participants: {session.participants?.length || 1}</div>
+        <div style={{marginTop:8}}>Matched with: <strong>{partnerLabel}</strong></div>
+        <div style={{marginTop:8}}>Session status: <strong>{session.status}</strong></div>
       </div>
 
-      <div style={{marginTop:12}} className="card p-4">
-        <div style={{marginBottom:8}}>
-          {!joined ? (
-            <div>
-              <div className="muted">Click <strong>Join meeting</strong> to enter the room and finalize your session credits.</div>
-              <div style={{marginTop:8}}>
-                <button onClick={markJoinedAndFinalize} className="btn-primary">Join meeting</button>
-                <button onClick={goFullScreen} className="btn small" style={{marginLeft:8}}>Fullscreen</button>
-              </div>
-            </div>
-          ) : (
-            <div style={{marginBottom:8}}>
-              <div style={{color:'#10b981'}}>You have joined the session. Use the Jitsi controls to mute/video. When finished, End session in the UI.</div>
-              <div style={{marginTop:8}}>
-                <button onClick={goFullScreen} className="btn small">Fullscreen</button>
-              </div>
-            </div>
-          )}
+      {!joined ? (
+        <div style={{marginTop:12}}>
+          <div style={{marginBottom:8}}>Press <strong>Start meeting</strong> to enter the video room. Video will only load after you start.</div>
+          <button onClick={startMeeting} className="btn-primary">Start meeting</button>
         </div>
+      ) : (
+        <div style={{marginTop:12}}>
+          <div style={{marginBottom:8}}>You joined. Jitsi is below.</div>
+        </div>
+      )}
 
-        <div className="jitsi-container" data-jitsi-container style={{marginTop:12}}>
-          <JitsiRoom roomId={id} displayName={user?.displayName || 'Student'} />
-        </div>
+      <div style={{marginTop:18}}>
+        {/* only load jitsi UI after joined to avoid pre-start video */}
+        {joined && (
+          <div style={{height:600}}>
+            <JitsiRoom roomId={id} displayName={user?.displayName || user?.email || 'Student'} />
+          </div>
+        )}
+        {!joined && <div style={{padding:20, background:'#fafafa', borderRadius:8}}>Waiting to join video... (click Start meeting)</div>}
+      </div>
+
+      <div style={{marginTop:18}}>
+        <a href="/dashboard">Back to dashboard</a>
       </div>
     </div>
   )
