@@ -1,7 +1,9 @@
 'use client'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { auth, onAuthStateChanged, db, collection, addDoc, query, where, getDocs, deleteDoc, doc, getDoc, updateDoc } from '../../lib/firebase'
+import { auth, onAuthStateChanged, db, collection, addDoc, query, where, getDocs, deleteDoc, doc, getDoc, runTransaction, orderBy, limit, updateDoc } from '../../lib/firebase'
+
+const HOLD_MINUTES = 10 // how long to hold credits before expiry
 
 export default function JoinPage(){
   const params = useSearchParams()
@@ -39,7 +41,7 @@ export default function JoinPage(){
   async function loadUserDoc(){
     try {
       const uSnap = await getDoc(doc(db,'users', user.uid))
-      if (uSnap.exists()) return uSnap.data()
+      if (uSnap.exists()) return { id: uSnap.id, ...uSnap.data() }
       return null
     } catch(e){ console.error('loadUserDoc', e); return null }
   }
@@ -49,13 +51,10 @@ export default function JoinPage(){
   }
 
   async function checkFreeLimits(userDoc){
-    // returns {ok: boolean, reason: string|null}
     const plan = userDoc?.plan || 'free'
     if (planIsPro(plan)) return { ok: true }
-    // free user: check monthly usage
-    const monthKey = currentMonthKey
     const mu = userDoc?.monthlyUsage || {}
-    const m = mu[monthKey] || { oneOnOne: 0, group: 0 }
+    const m = mu[currentMonthKey] || { oneOnOne: 0, group: 0 }
     if (mode === 'one-on-one') {
       if ((m.oneOnOne || 0) >= 10) return { ok: false, reason: 'Free plan limit reached: 10 one-on-one sessions per month. Upgrade to Pro.' }
     } else if (mode === 'group') {
@@ -95,72 +94,114 @@ export default function JoinPage(){
     } catch(e){ console.warn('removeQueueDoc failed', e) }
   }
 
-  async function incrementUserUsage(uid, modeToInc){
+  // atomic match: claim earliest candidate and create a session with holds for both users
+  async function tryAtomicMatch(plan){
     try {
-      const uRef = doc(db,'users', uid)
-      const uSnap = await getDoc(uRef)
-      if (!uSnap.exists()) return
-      const uData = uSnap.data()
-      const mu = uData.monthlyUsage || {}
-      const monthKey = currentMonthKey
-      const m = mu[monthKey] || { oneOnOne: 0, group: 0 }
-      if (modeToInc === 'one-on-one') m.oneOnOne = (m.oneOnOne || 0) + 1
-      if (modeToInc === 'group') m.group = (m.group || 0) + 1
-      mu[monthKey] = m
-      await updateDoc(uRef, {
-        monthlyUsage: mu,
-        sessionsCompleted: (uData.sessionsCompleted || 0) + 1,
-        totalHours: (uData.totalHours || 0) // totalHours not incremented here; can be updated post-session
-      })
-    } catch(e){
-      console.warn('incrementUserUsage failed', e)
-    }
-  }
-
-  async function checkForMatchAndCreateSession(plan){
-    try {
-      // Query earliest other queue with same exam, subject, mode, and same plan
       const q = query(
         collection(db, 'queues'),
-        where('mode', '==', mode),
-        where('exam', '==', exam),
-        where('subject', '==', subject),
-        where('plan', '==', plan)
+        where('exam','==', exam),
+        where('subject','==', subject),
+        where('mode','==', mode),
+        where('plan','==', plan),
+        orderBy('createdAt','asc'),
+        limit(10)
       )
       const snap = await getDocs(q)
-      let partner = null
-      // find earliest other (first in list) - getDocs does not guarantee order, but generally returns inserts; safe-enough for MVP
-      snap.forEach(s => {
-        if (s.data().uid !== user.uid && !partner) partner = { id: s.id, ...s.data() }
-      })
+      const candidates = []
+      snap.forEach(s => { if (s.id && s.data().uid !== user.uid) candidates.push({ id: s.id, data: s.data() }) })
 
-      if (partner) {
-        // Create session doc
-        const sessionRef = await addDoc(collection(db, 'sessions'), {
-          participants: [user.uid, partner.uid],
-          exam, subject, mode,
-          plan,
-          startTime: new Date().toISOString(),
-          status: 'active'
-        })
+      for (const partner of candidates) {
+        try {
+          const sessionId = await runTransaction(db, async (t) => {
+            const partnerRef = doc(db,'queues', partner.id)
+            const partnerSnap = await t.get(partnerRef)
+            if (!partnerSnap.exists()) throw new Error('partner-gone')
+            if (partnerSnap.data().matched) throw new Error('partner-taken')
 
-        // Remove partner queue + self queue
-        try { if (partner.id) await deleteDoc(doc(db,'queues', partner.id)) } catch(e){ console.warn(e) }
-        try { if (queueDocRef.current) await deleteDoc(doc(db,'queues', queueDocRef.current.id)) } catch(e){ console.warn(e) }
+            if (!queueDocRef.current) throw new Error('self-missing')
+            const selfRef = doc(db,'queues', queueDocRef.current.id)
+            const selfSnap = await t.get(selfRef)
+            if (!selfSnap.exists()) throw new Error('self-gone')
 
-        // increment usage for both users
-        await incrementUserUsage(user.uid, mode)
-        await incrementUserUsage(partner.uid, mode)
+            // check both users' current holds/usage and ensure free limits still ok
+            const u1Ref = doc(db,'users', user.uid)
+            const u2Ref = doc(db,'users', partnerSnap.data().uid)
+            const u1Snap = await t.get(u1Ref)
+            const u2Snap = await t.get(u2Ref)
+            if (!u1Snap.exists() || !u2Snap.exists()) throw new Error('user-doc-missing')
 
-        // stop polling and navigate to session
-        stopPolling()
-        router.push(`/session/${sessionRef.id}`)
-        return true
+            const u1 = u1Snap.data()
+            const u2 = u2Snap.data()
+            const monthKey = new Date().toISOString().slice(0,7)
+
+            // check free limits again (fail the transaction if limit reached)
+            function willExceed(uData){
+              const p = uData.plan || 'free'
+              if (p.toLowerCase() === 'pro') return false
+              const mu = uData.monthlyUsage || {}
+              const m = mu[monthKey] || { oneOnOne:0, group:0 }
+              const holds = uData.holds || {}
+              const h = holds[monthKey] || { oneOnOne:0, group:0 }
+              const current = mode === 'one-on-one' ? (m.oneOnOne || 0) + (h.oneOnOne || 0) : (m.group || 0) + (h.group || 0)
+              if (mode === 'one-on-one' && current >= 10) return true
+              if (mode === 'group' && current >= 20) return true
+              return false
+            }
+            if (willExceed(u1) || willExceed(u2)) throw new Error('limit-exceeded')
+
+            // create session doc (reserved)
+            const sessionRef = doc(collection(db,'sessions'))
+            const now = new Date()
+            const holdExpiry = new Date(now.getTime() + HOLD_MINUTES * 60 * 1000).toISOString()
+            t.set(sessionRef, {
+              participants: [user.uid, partnerSnap.data().uid],
+              exam, subject, mode,
+              plan,
+              startTime: now.toISOString(),
+              status: 'reserved', // reserved until presence/finalize
+              reserved: true,
+              reservedAt: now.toISOString(),
+              holdExpiry,
+              chargesFinalized: false,
+              createdBy: user.uid
+            })
+
+            // delete both queue docs
+            t.delete(partnerRef)
+            t.delete(selfRef)
+
+            // increment holds for both users (atomic)
+            const u1Hold = u1.holds || {}
+            const u2Hold = u2.holds || {}
+            const u1Month = u1Hold[monthKey] || { oneOnOne:0, group:0 }
+            const u2Month = u2Hold[monthKey] || { oneOnOne:0, group:0 }
+            if (mode === 'one-on-one') {
+              u1Month.oneOnOne = (u1Month.oneOnOne || 0) + 1
+              u2Month.oneOnOne = (u2Month.oneOnOne || 0) + 1
+            } else {
+              u1Month.group = (u1Month.group || 0) + 1
+              u2Month.group = (u2Month.group || 0) + 1
+            }
+            u1Hold[monthKey] = u1Month
+            u2Hold[monthKey] = u2Month
+            t.update(u1Ref, { holds: u1Hold })
+            t.update(u2Ref, { holds: u2Hold })
+
+            return sessionRef.id
+          })
+          if (sessionId) {
+            stopPolling()
+            router.push(`/session/${sessionId}`)
+            return true
+          }
+        } catch (txErr) {
+          console.warn('transaction attempt failed', txErr)
+          continue
+        }
       }
-
       return false
     } catch(e){
-      console.error('checkForMatch error', e)
+      console.error('tryAtomicMatch error', e)
       setErrorMsg(String(e.message || JSON.stringify(e)))
       setStatus('error')
       return false
@@ -171,9 +212,9 @@ export default function JoinPage(){
     if (pollRef.current) return
     pollRef.current = setInterval(async () => {
       if (status === 'error') return
-      const matched = await checkForMatchAndCreateSession(plan)
+      const matched = await tryAtomicMatch(plan)
       if (!matched) setStatus('waiting')
-    }, 2000) // faster matching for priority
+    }, 2000)
   }
 
   function stopPolling(){
@@ -184,26 +225,17 @@ export default function JoinPage(){
     setStatus('joining')
     setErrorMsg(null)
     const uDoc = await loadUserDoc()
-    if (!uDoc) {
-      setErrorMsg('User profile missing. Please try reloading or contact admin.')
-      return setStatus('error')
-    }
+    if (!uDoc) { setErrorMsg('User profile missing. Please reload.'); return setStatus('error') }
     const plan = uDoc.plan || 'free'
-    // check free limits
     const limits = await checkFreeLimits(uDoc)
-    if (!limits.ok) {
-      setErrorMsg(limits.reason)
-      return setStatus('error')
-    }
+    if (!limits.ok) { setErrorMsg(limits.reason); return setStatus('error') }
 
-    // create queue
     const qRef = await createQueueDoc(plan)
     if (!qRef) return
     setStatus('waiting')
-    // immediately check for existing partner
-    const matchedNow = await checkForMatchAndCreateSession(plan)
+
+    const matchedNow = await tryAtomicMatch(plan)
     if (matchedNow) return
-    // otherwise poll
     startPolling(plan)
   }
 
