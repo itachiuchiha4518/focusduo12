@@ -1,7 +1,20 @@
 'use client'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { auth, onAuthStateChanged, db, collection, addDoc, query, where, getDocs, deleteDoc, doc, getDoc, runTransaction, orderBy, limit, updateDoc } from '../../lib/firebase'
+import {
+  auth,
+  onAuthStateChanged,
+  db,
+  collection,
+  addDoc,
+  query,
+  where,
+  getDocs,
+  deleteDoc,
+  doc,
+  getDoc,
+  runTransaction
+} from '../../lib/firebase'
 
 const HOLD_MINUTES = 10 // how long to hold credits before expiry
 
@@ -94,23 +107,40 @@ export default function JoinPage(){
     } catch(e){ console.warn('removeQueueDoc failed', e) }
   }
 
-  // atomic match: claim earliest candidate and create a session with holds for both users
+  // ---------- FIXED: query without orderBy, then sort in JS ----------
   async function tryAtomicMatch(plan){
     try {
+      // query all matching queues for same exam/subject/mode/plan (no orderBy)
       const q = query(
         collection(db, 'queues'),
         where('exam','==', exam),
         where('subject','==', subject),
         where('mode','==', mode),
-        where('plan','==', plan),
-        orderBy('createdAt','asc'),
-        limit(10)
+        where('plan','==', plan)
       )
+
       const snap = await getDocs(q)
       const candidates = []
-      snap.forEach(s => { if (s.id && s.data().uid !== user.uid) candidates.push({ id: s.id, data: s.data() }) })
+      snap.forEach(s => {
+        const data = s.data()
+        if (s.id && data && data.uid !== user.uid) {
+          candidates.push({ id: s.id, data })
+        }
+      })
 
-      for (const partner of candidates) {
+      if (candidates.length === 0) return false
+
+      // sort by createdAt in JS (oldest first)
+      candidates.sort((a,b) => {
+        const ta = a.data.createdAt ? new Date(a.data.createdAt).getTime() : 0
+        const tb = b.data.createdAt ? new Date(b.data.createdAt).getTime() : 0
+        return ta - tb
+      })
+
+      // try up to first 10 candidates (list is already sorted)
+      const limitCandidates = candidates.slice(0, 10)
+
+      for (const partner of limitCandidates) {
         try {
           const sessionId = await runTransaction(db, async (t) => {
             const partnerRef = doc(db,'queues', partner.id)
@@ -123,7 +153,7 @@ export default function JoinPage(){
             const selfSnap = await t.get(selfRef)
             if (!selfSnap.exists()) throw new Error('self-gone')
 
-            // check both users' current holds/usage and ensure free limits still ok
+            // check both users' holds/limits
             const u1Ref = doc(db,'users', user.uid)
             const u2Ref = doc(db,'users', partnerSnap.data().uid)
             const u1Snap = await t.get(u1Ref)
@@ -134,7 +164,6 @@ export default function JoinPage(){
             const u2 = u2Snap.data()
             const monthKey = new Date().toISOString().slice(0,7)
 
-            // check free limits again (fail the transaction if limit reached)
             function willExceed(uData){
               const p = uData.plan || 'free'
               if (p.toLowerCase() === 'pro') return false
@@ -149,7 +178,7 @@ export default function JoinPage(){
             }
             if (willExceed(u1) || willExceed(u2)) throw new Error('limit-exceeded')
 
-            // create session doc (reserved)
+            // create reserved session doc
             const sessionRef = doc(collection(db,'sessions'))
             const now = new Date()
             const holdExpiry = new Date(now.getTime() + HOLD_MINUTES * 60 * 1000).toISOString()
@@ -158,7 +187,7 @@ export default function JoinPage(){
               exam, subject, mode,
               plan,
               startTime: now.toISOString(),
-              status: 'reserved', // reserved until presence/finalize
+              status: 'reserved',
               reserved: true,
               reservedAt: now.toISOString(),
               holdExpiry,
@@ -170,7 +199,7 @@ export default function JoinPage(){
             t.delete(partnerRef)
             t.delete(selfRef)
 
-            // increment holds for both users (atomic)
+            // increment holds for both users
             const u1Hold = u1.holds || {}
             const u2Hold = u2.holds || {}
             const u1Month = u1Hold[monthKey] || { oneOnOne:0, group:0 }
@@ -199,6 +228,7 @@ export default function JoinPage(){
           continue
         }
       }
+
       return false
     } catch(e){
       console.error('tryAtomicMatch error', e)
@@ -207,6 +237,7 @@ export default function JoinPage(){
       return false
     }
   }
+  // ---------- end tryAtomicMatch ----------
 
   function startPolling(plan){
     if (pollRef.current) return
@@ -255,4 +286,4 @@ export default function JoinPage(){
       </div>
     </div>
   )
-}
+        }
