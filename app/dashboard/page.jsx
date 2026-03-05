@@ -1,4 +1,4 @@
-// app/dashboard/page.jsx  — OVERWRITE this file completely (or insert ensureUserDoc into your existing dashboard's auth handler)
+// app/dashboard/page.jsx — OVERWRITE
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
@@ -37,6 +37,17 @@ export default function Dashboard(){
   const [loading, setLoading] = useState(true)
   const [userDoc, setUserDoc] = useState(null)
 
+  // UI exam/subject lists (you can expand later)
+  const EXAMS = ['jee','neet']
+  const SUBJECTS = {
+    jee: ['physics','chemistry','math'],
+    neet: ['physics','chemistry','biology']
+  }
+
+  const [exam, setExam] = useState('jee')
+  const [subject, setSubject] = useState('physics')
+  const [mode, setMode] = useState('one-on-one') // or 'group'
+
   useEffect(()=>{
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -44,22 +55,8 @@ export default function Dashboard(){
         return
       }
       setUser(u)
-      // ensure user document exists so the dashboard won't hang
       const res = await ensureUserDoc(u.uid, u)
-      if (res.error) {
-        console.error(res.error)
-      } else if (res.created) {
-        // newly created, set defaults
-        setUserDoc({
-          name: u.displayName || u.email,
-          plan: 'free',
-          sessionsCompleted: 0,
-          totalStudyHours: 0,
-          level: 'Beginner'
-        })
-      } else {
-        setUserDoc(res.data)
-      }
+      if (res && res.data) setUserDoc(res.data)
       setLoading(false)
     })
     return ()=> unsub && unsub()
@@ -69,17 +66,56 @@ export default function Dashboard(){
 
   return (
     <div style={{padding:20}}>
-      <h2>Dashboard</h2>
-      <div style={{marginTop:8}}>
-        <div>Name: <strong>{userDoc?.name || user?.displayName || user?.email}</strong></div>
-        <div>Plan: <strong>{userDoc?.plan || 'free'}</strong></div>
-        <div>Current streak: <strong>{userDoc?.currentStreak ?? 0} days</strong></div>
-        <div>Sessions completed: <strong>{userDoc?.sessionsCompleted ?? 0}</strong></div>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <div>
+          <h1 style={{margin:0}}>FocusDuo</h1>
+          <div className="muted">Study together. Stay consistent.</div>
+        </div>
+        <div style={{textAlign:'right'}}>
+          <div>{userDoc?.name || user?.displayName || user?.email}</div>
+          <div style={{fontSize:12}}>Plan: {userDoc?.plan || 'free'}</div>
+        </div>
       </div>
 
-      <div style={{marginTop:16}}>
-        <a href="/join?mode=one-on-one&exam=jee&subject=physics" className="btn">Join 1-on-1 (Physics)</a>
-        <a href="/join?mode=group&exam=jee&subject=physics" style={{marginLeft:8}} className="btn">Join Group</a>
+      <div style={{marginTop:20}}>
+        <h3>Start a session</h3>
+        <div style={{display:'flex', gap:12, alignItems:'center', flexWrap:'wrap'}}>
+          <div>
+            <label>Exam</label><br/>
+            <select value={exam} onChange={e=>{ setExam(e.target.value); setSubject(SUBJECTS[e.target.value][0]) }}>
+              {EXAMS.map(x => <option key={x} value={x}>{x.toUpperCase()}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label>Subject</label><br/>
+            <select value={subject} onChange={e=>setSubject(e.target.value)}>
+              {(SUBJECTS[exam] || []).map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label>Mode</label><br/>
+            <select value={mode} onChange={e=>setMode(e.target.value)}>
+              <option value="one-on-one">1-on-1</option>
+              <option value="group">Group</option>
+            </select>
+          </div>
+
+          <div>
+            <br/>
+            {/* Navigate to join with normalized values (lowercase) */}
+            <button className="btn-primary" onClick={()=> router.push(`/join?mode=${encodeURIComponent(mode)}&exam=${encodeURIComponent(exam)}&subject=${encodeURIComponent(subject)}`)}>
+              Join {mode === 'one-on-one' ? '1-on-1' : 'Group'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{marginTop:28}}>
+        <h4>Your stats</h4>
+        <div>Current streak: <strong>{userDoc?.currentStreak ?? 0}</strong></div>
+        <div>Sessions completed: <strong>{userDoc?.sessionsCompleted ?? 0}</strong></div>
       </div>
     </div>
   )
