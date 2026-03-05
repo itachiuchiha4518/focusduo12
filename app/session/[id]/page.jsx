@@ -1,14 +1,15 @@
 'use client'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
-import { db, doc, getDoc, updateDoc, setDoc, collection, runTransaction } from '../../../lib/firebase'
+import { db, doc, getDoc, setDoc, collection, runTransaction } from '../../../lib/firebase'
 import { auth, onAuthStateChanged } from '../../../lib/firebase'
 const JitsiRoom = dynamic(() => import('../../../components/JitsiRoom'), { ssr: false })
 
 export default function SessionPage(){
+  const router = useRouter()
   const pathname = usePathname()
-  const id = pathname.split('/').pop() || ''
+  const id = pathname?.split('/').pop() || ''
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState(null)
@@ -28,7 +29,18 @@ export default function SessionPage(){
         if (snap.exists()) {
           if(mounted) setSession(snap.data())
         } else {
-          await setDoc(doc(db,'sessions', id), { participants: [], exam: null, subject: null, mode: 'one-on-one', startTime: new Date().toISOString(), status: 'reserved', reserved: true, holdExpiry: new Date(new Date().getTime() + 10*60000).toISOString() })
+          // create minimal reserved session if missing
+          await setDoc(doc(db,'sessions', id), {
+            participants: [],
+            exam: null,
+            subject: null,
+            mode: 'one-on-one',
+            startTime: new Date().toISOString(),
+            status: 'reserved',
+            reserved: true,
+            holdExpiry: new Date(new Date().getTime() + 10*60000).toISOString(),
+            chargesFinalized: false
+          })
           const newSnap = await getDoc(doc(db,'sessions', id))
           if (newSnap.exists() && mounted) setSession(newSnap.data())
         }
@@ -42,82 +54,96 @@ export default function SessionPage(){
     return ()=> { mounted = false }
   },[id])
 
-  // mark presence - when a user joins we finalize charges (move holds -> monthlyUsage) atomically
+  // MARK JOINED & FINALIZE — FIXED: READ ALL DOCS FIRST, THEN WRITE
   async function markJoinedAndFinalize(){
     if(!user) return alert('Sign in first')
     try {
       await runTransaction(db, async (t) => {
+        // 1) read session doc first
         const sRef = doc(db,'sessions', id)
         const sSnap = await t.get(sRef)
         if (!sSnap.exists()) throw new Error('session-missing')
         const sData = sSnap.data()
-        // if charges already finalized do nothing, just record presence
-        if (!sData.chargesFinalized) {
-          // ensure hold hasn't expired
-          const now = new Date()
-          if (sData.holdExpiry && new Date(sData.holdExpiry) < now) {
-            // hold expired — release holds and set session.status to 'expired'
-            t.update(sRef, { status: 'expired', reserved: false })
-            // release holds for participants
-            for (const uid of (sData.participants || [])) {
-              const uRef = doc(db,'users', uid)
-              const uSnap = await t.get(uRef)
-              if (!uSnap.exists()) continue
-              const uData = uSnap.data() || {}
-              const holds = uData.holds || {}
-              const monthKey = new Date().toISOString().slice(0,7)
-              const h = holds[monthKey] || { oneOnOne:0, group:0 }
-              if (sData.mode === 'one-on-one') h.oneOnOne = Math.max(0, (h.oneOnOne || 0) - 1)
-              else h.group = Math.max(0, (h.group || 0) - 1)
-              holds[monthKey] = h
-              t.update(uRef, { holds })
-            }
-            throw new Error('hold-expired')
-          }
 
-          // finalize: move holds -> monthlyUsage and increment sessionsCompleted
+        // 2) read all participant user docs BEFORE any writes
+        const participantUids = (sData.participants || []).slice()
+        const userSnaps = {}
+        for (const uid of participantUids) {
+          const uRef = doc(db,'users', uid)
+          const uSnap = await t.get(uRef)
+          userSnaps[uid] = { ref: uRef, snap: uSnap }
+        }
+
+        // Now we have read session + all users — no writes yet
+
+        // 3) check hold expiry
+        const now = new Date()
+        if (sData.holdExpiry && new Date(sData.holdExpiry) < now) {
+          // hold expired -> prepare writes: set session expired and release holds
+          // Build updated holds for each user
           const monthKey = new Date().toISOString().slice(0,7)
-          for (const uid of (sData.participants || [])) {
-            const uRef = doc(db,'users', uid)
-            const uSnap = await t.get(uRef)
+          for (const uid of participantUids) {
+            const uSnap = userSnaps[uid].snap
             if (!uSnap.exists()) continue
             const uData = uSnap.data() || {}
             const holds = uData.holds || {}
-            const mu = uData.monthlyUsage || {}
-            const h = (holds[monthKey] || { oneOnOne:0, group:0 })
-            const m = (mu[monthKey] || { oneOnOne:0, group:0 })
-            if (sData.mode === 'one-on-one') {
-              m.oneOnOne = (m.oneOnOne || 0) + (h.oneOnOne || 0)
-              h.oneOnOne = 0
-            } else {
-              m.group = (m.group || 0) + (h.group || 0)
-              h.group = 0
-            }
-            mu[monthKey] = m
+            const h = holds[monthKey] || { oneOnOne:0, group:0 }
+            if (sData.mode === 'one-on-one') h.oneOnOne = Math.max(0, (h.oneOnOne || 0) - 1)
+            else h.group = Math.max(0, (h.group || 0) - 1)
             holds[monthKey] = h
-            t.update(uRef, {
-              monthlyUsage: mu,
-              holds,
-              sessionsCompleted: (uData.sessionsCompleted || 0) + 1
-            })
+            t.update(userSnaps[uid].ref, { holds })
           }
-
-          t.update(sRef, { chargesFinalized: true, reserved: false, status: 'active', startedAt: new Date().toISOString() })
+          t.update(sRef, { status: 'expired', reserved: false })
+          // finally throw to indicate expired so client can redirect/requeue
+          throw new Error('hold-expired')
         }
 
-        // write presence doc for the user
+        // 4) finalize charges: move holds -> monthlyUsage and increment sessionsCompleted
+        const monthKey = new Date().toISOString().slice(0,7)
+        for (const uid of participantUids) {
+          const uSnap = userSnaps[uid].snap
+          if (!uSnap.exists()) continue
+          const uData = uSnap.data() || {}
+          const holds = uData.holds || {}
+          const mu = uData.monthlyUsage || {}
+          const h = (holds[monthKey] || { oneOnOne:0, group:0 })
+          const m = (mu[monthKey] || { oneOnOne:0, group:0 })
+
+          if (sData.mode === 'one-on-one') {
+            m.oneOnOne = (m.oneOnOne || 0) + (h.oneOnOne || 0)
+            h.oneOnOne = 0
+          } else {
+            m.group = (m.group || 0) + (h.group || 0)
+            h.group = 0
+          }
+          mu[monthKey] = m
+          holds[monthKey] = h
+
+          t.update(userSnaps[uid].ref, {
+            monthlyUsage: mu,
+            holds,
+            sessionsCompleted: (uData.sessionsCompleted || 0) + 1
+          })
+        }
+
+        // 5) update session doc to active + chargesFinalized
+        t.update(sRef, { chargesFinalized: true, reserved: false, status: 'active', startedAt: new Date().toISOString() })
+
+        // 6) create presence doc for current user (write)
         const presRef = doc(collection(db, `sessions/${id}/presence`))
         t.set(presRef, { uid: user.uid, joinedAt: new Date().toISOString() })
+
+        // All writes are now after all reads (compliant)
       })
 
       setJoined(true)
-      // reload session
-      const sSnap = await getDoc(doc(db,'sessions', id))
-      if (sSnap.exists()) setSession(sSnap.data())
+      // reload session state
+      const sSnap2 = await getDoc(doc(db,'sessions', id))
+      if (sSnap2.exists()) setSession(sSnap2.data())
     } catch(e){
       console.error('markJoinedAndFinalize', e)
       if ((String(e.message||'')).includes('hold-expired')) {
-        alert('This session hold expired before anyone joined. Please join again or requeue.')
+        alert('This session hold expired before anyone joined. Please requeue or try again.')
         router.push('/dashboard')
       } else {
         alert('Failed to join session: ' + (e.message || e))
@@ -159,7 +185,7 @@ export default function SessionPage(){
             </div>
           ) : (
             <div style={{marginBottom:8}}>
-              <div style={{color:'#10b981'}}>You have joined the session. Use Jitsi to study. Press "End session" when finished (no automatic deduction now).</div>
+              <div style={{color:'#10b981'}}>You have joined the session. Use the Jitsi controls to mute/video. When finished, End session in the UI.</div>
               <div style={{marginTop:8}}>
                 <button onClick={goFullScreen} className="btn small">Fullscreen</button>
               </div>
@@ -173,4 +199,4 @@ export default function SessionPage(){
       </div>
     </div>
   )
-    }
+}
