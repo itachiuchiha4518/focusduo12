@@ -1,14 +1,11 @@
+// app/session/[id]/page.jsx
 'use client'
 
 import React, { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import PeerRoom from '../../../components/PeerRoom'   // p2p 1-on-1 component (overwrite earlier)
-import JitsiRoom from '../../../components/JitsiRoom' // group Jitsi component (if used)
+import PeerRoom from '../../../components/PeerRoom'
+import JitsiRoom from '../../../components/JitsiRoom'
 
-/*
-  Firestore / Auth helpers from your lib/firebase.
-  Make sure lib/firebase exports these (the version I gave earlier does).
-*/
 import {
   auth,
   onAuthStateChanged,
@@ -19,10 +16,10 @@ import {
   getDoc
 } from '../../../lib/firebase'
 
-const ADMIN_UID = 'NIsbHB9RmXgR5vJEyv8CuV0ggD03' // admin UID you gave earlier
+const ADMIN_UID = 'NIsbHB9RmXgR5vJEyv8CuV0ggD03'
 
 export default function SessionPage() {
-  const { id } = useParams() // session id from URL
+  const { id } = useParams()
   const router = useRouter()
 
   const [user, setUser] = useState(null)
@@ -32,11 +29,10 @@ export default function SessionPage() {
   const [loadingSession, setLoadingSession] = useState(true)
   const [error, setError] = useState(null)
 
-  // listen auth
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       if (!u) {
-        router.push('/') // if not logged in, go home
+        router.push('/')
         return
       }
       setUser(u)
@@ -45,7 +41,6 @@ export default function SessionPage() {
     return () => unsub && unsub()
   }, [router])
 
-  // subscribe to session doc
   useEffect(() => {
     if (!id) return
     setLoadingSession(true)
@@ -57,8 +52,7 @@ export default function SessionPage() {
         setError('Session not found')
         return
       }
-      const data = snap.data()
-      setSession(data)
+      setSession(snap.data())
       setLoadingSession(false)
       setError(null)
     }, (err) => {
@@ -102,24 +96,17 @@ export default function SessionPage() {
     )
   }
 
-  // session fields expectation:
-  // session.users -> array of UIDs (creator first)
-  // session.names -> array of display names (parallel to users)
-  // session.mode -> 'one-on-one' or 'group'
-  // session.exam, session.subject
   const users = session.users || []
   const names = session.names || []
   const mode = (session.mode || 'one-on-one')
   const exam = session.exam || ''
   const subject = session.subject || ''
-  const sessionStatus = session.status || 'waiting' // waiting | active | finished
+  const sessionStatus = session.status || 'waiting'
 
-  const isParticipant = user && users.includes(user.uid)
   const isCreator = user && users[0] === user.uid
   const otherIndex = users[0] === user.uid ? 1 : 0
   const matchedWithName = names[otherIndex] || (users.length > 1 ? users[otherIndex] : null)
 
-  // start meeting: only the creator can mark session active (this triggers the media components)
   const startMeeting = async () => {
     try {
       const sRef = doc(db, 'sessions', id)
@@ -130,17 +117,10 @@ export default function SessionPage() {
     }
   }
 
-  // leave session (simple client-side leave) - not removing doc server-side
   const leaveSession = async () => {
-    try {
-      // just navigate back to dashboard. session cleanup handled elsewhere.
-      router.push('/')
-    } catch (e) {
-      console.warn('leaveSession', e)
-    }
+    try { router.push('/') } catch (e) { console.warn('leaveSession', e) }
   }
 
-  // minimal UI
   return (
     <div style={{ padding: 18, maxWidth: 980, margin: '0 auto' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -187,7 +167,6 @@ export default function SessionPage() {
       </section>
 
       <section style={{ marginTop: 20 }}>
-        {/* Render the correct video component based on mode */}
         {sessionStatus !== 'active' && (
           <div style={{ marginBottom: 12, color: '#666' }}>
             The meeting will start when the session status is active. Creator can press "Start meeting".
@@ -195,22 +174,16 @@ export default function SessionPage() {
         )}
 
         {sessionStatus === 'active' && mode === 'one-on-one' && (
-          <div>
-            {/* Full file ready: PeerRoom mounted for 1-on-1 peer-to-peer */}
-            <PeerRoom
-              sessionId={id}
-              localName={user.displayName || user.email}
-              userUid={user.uid}
-              isInitiator={isCreator}
-            />
-          </div>
+          <PeerRoom
+            sessionId={id}
+            localName={user.displayName || user.email}
+            userUid={user.uid}
+            isInitiator={isCreator}
+          />
         )}
 
         {sessionStatus === 'active' && mode === 'group' && (
-          <div>
-            {/* Group sessions use JitsiRoom (keeps jitsi for groups) */}
-            <JitsiRoom roomId={id} displayName={user.displayName || user.email} sessionId={id} />
-          </div>
+          <JitsiRoom roomId={id} displayName={user.displayName || user.email} sessionId={id} />
         )}
 
         {sessionStatus !== 'active' && (
