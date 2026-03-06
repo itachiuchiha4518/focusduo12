@@ -1,8 +1,8 @@
+// components/JitsiRoom.jsx
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { doc, collection, addDoc } from '../lib/firebase' // for report logging
+import { collection, addDoc } from '../lib/firebase' // for reporting (if you want)
 
-// OVERWRITE THIS FILE EXACTLY
 export default function JitsiRoom({ roomId, displayName, sessionId }) {
   const containerRef = useRef(null)
   const apiRef = useRef(null)
@@ -11,17 +11,13 @@ export default function JitsiRoom({ roomId, displayName, sessionId }) {
   const [embedError, setEmbedError] = useState(null)
   const [joined, setJoined] = useState(false)
   const [participants, setParticipants] = useState(0)
-  const domain = 'meet.jit.si'                        // <<— critical: explicitly use meet.jit.si
-  const roomName = `FocusDuo_${roomId}`               // deterministic room name
-
-  // Build browser URL fallback
+  const domain = 'meet.jit.si'
+  const roomName = `FocusDuo_${roomId}`
   const browserUrl = `https://${domain}/${encodeURIComponent(roomName)}#userInfo.displayName="${encodeURIComponent(displayName || 'Student')}"`
 
-  // Load external_api.js if needed
   function ensureScript() {
     return new Promise((resolve, reject) => {
       if (window.JitsiMeetExternalAPI) return resolve(true)
-      // avoid creating multiple tags
       if (scriptRef.current) {
         scriptRef.current.addEventListener('load', () => resolve(true))
         scriptRef.current.addEventListener('error', () => reject(new Error('script-load-failed')))
@@ -37,7 +33,6 @@ export default function JitsiRoom({ roomId, displayName, sessionId }) {
     })
   }
 
-  // instantiate Jitsi External API
   async function mountJitsi() {
     setLoading(true)
     setEmbedError(null)
@@ -50,17 +45,13 @@ export default function JitsiRoom({ roomId, displayName, sessionId }) {
       return
     }
 
-    // cleanup any previous instance
     try {
       if (apiRef.current && apiRef.current.dispose) {
         apiRef.current.dispose()
         apiRef.current = null
       }
-    } catch (e) {
-      console.warn('cleanup error', e)
-    }
+    } catch (e) { /* ignore */ }
 
-    // guard
     if (!containerRef.current) {
       setEmbedError('Mount container missing')
       setLoading(false)
@@ -68,8 +59,6 @@ export default function JitsiRoom({ roomId, displayName, sessionId }) {
     }
 
     try {
-      // Options: disable the prejoin page (go directly to meeting),
-      // disable deep linking, set displayName
       const options = {
         roomName,
         parentNode: containerRef.current,
@@ -79,11 +68,10 @@ export default function JitsiRoom({ roomId, displayName, sessionId }) {
           startWithAudioMuted: false,
           startWithVideoMuted: true,
           disableDeepLinking: true,
-          enableUserRolesBasedOnToken: false // try to avoid token role behavior
+          enableUserRolesBasedOnToken: false
         },
         interfaceConfigOverwrite: {
           MOBILE_APP_PROMO: false,
-          // limit toolbar to essentials
           TOOLBAR_BUTTONS: [
             'microphone', 'camera', 'chat', 'tileview', 'fullscreen', 'hangup'
           ]
@@ -92,57 +80,33 @@ export default function JitsiRoom({ roomId, displayName, sessionId }) {
 
       apiRef.current = new window.JitsiMeetExternalAPI(domain, options)
 
-      // events
-      apiRef.current.addEventListener('videoConferenceJoined', (ev) => {
-        console.log('[Jitsi] videoConferenceJoined', ev)
+      apiRef.current.addEventListener('videoConferenceJoined', ev => {
+        console.log('[Jitsi] joined', ev)
         setJoined(true)
         setLoading(false)
       })
 
       apiRef.current.addEventListener('videoConferenceLeft', () => {
-        console.log('[Jitsi] videoConferenceLeft')
         setJoined(false)
       })
 
-      apiRef.current.addEventListener('participantJoined', (ev) => {
-        console.log('[Jitsi] participantJoined', ev)
-        // ev.memberCount might be present; otherwise query participants via getParticipantsInfo
-        try {
-          const info = apiRef.current.getNumberOfParticipants()
-          setParticipants(info || 1)
-        } catch (e) {
-          setParticipants(prev => prev + 1)
-        }
+      apiRef.current.addEventListener('participantJoined', () => {
+        try { const count = apiRef.current.getNumberOfParticipants(); setParticipants(count) } catch (e) {}
       })
 
-      apiRef.current.addEventListener('participantLeft', (ev) => {
-        console.log('[Jitsi] participantLeft', ev)
-        try {
-          const info = apiRef.current.getNumberOfParticipants()
-          setParticipants(info || Math.max(0, participants - 1))
-        } catch (e) {
-          setParticipants(prev => Math.max(0, prev - 1))
-        }
+      apiRef.current.addEventListener('participantLeft', () => {
+        try { const count = apiRef.current.getNumberOfParticipants(); setParticipants(count) } catch (e) {}
       })
 
-      // small timeout: if after X seconds we still don't join, surface fallback
-      const failTimeout = setTimeout(async () => {
+      // fallback timeout
+      const failTimeout = setTimeout(() => {
         if (!joined) {
-          // check participants count via API (if available)
-          let count = 0
-          try { count = apiRef.current.getNumberOfParticipants() } catch(e){ /* ignore */ }
-          console.warn('[Jitsi] join timeout — participants:', count)
-          setEmbedError('Embed appears stuck. Try "Reload embed" or "Open in browser" below.')
+          setEmbedError('Embed appears stuck. Use "Open in browser".')
           setLoading(false)
         }
-      }, 12000) // 12s
+      }, 12000)
 
-      // clear timeout if join event fires
-      const offJoin = () => { clearTimeout(failTimeout) }
-
-      return () => {
-        offJoin()
-      }
+      return () => clearTimeout(failTimeout)
     } catch (err) {
       console.error('[Jitsi] instantiate error', err)
       setEmbedError('Failed to create Jitsi instance: ' + (err.message || err))
@@ -150,68 +114,56 @@ export default function JitsiRoom({ roomId, displayName, sessionId }) {
     }
   }
 
-  // mount on initial render
   useEffect(() => {
     mountJitsi()
-    // cleanup on unmount
     return () => {
-      try {
-        if (apiRef.current && apiRef.current.dispose) apiRef.current.dispose()
-        apiRef.current = null
-      } catch (e) { /* ignore */ }
+      try { if (apiRef.current && apiRef.current.dispose) apiRef.current.dispose() } catch (e) {}
+      apiRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, displayName])
 
-  // custom "Report" action (writes a doc to Firestore) — optional
   async function reportSession(reason = 'manual-report') {
     try {
-      // add minimal report doc for admin review
-      await addDoc(collection(window.firebaseDB || { /* fallback */ }, 'reports'), {
+      await addDoc(collection('reports'), {
         sessionId: sessionId || roomId,
         reason,
         at: new Date().toISOString()
       })
-      alert('Report submitted. Admin will review.')
+      alert('Report submitted.')
     } catch (e) {
       console.warn('report failed', e)
-      alert('Could not submit report from this device (client-only). Please contact admin.')
+      alert('Could not submit report (client-only). Contact admin.')
     }
   }
 
   return (
     <div style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <div style={{ fontSize: 14, color: '#333' }}>{loading ? 'Loading video...' : (embedError ? 'Embed error' : 'Video')}</div>
+        <div style={{ fontSize: 13, color: '#444' }}>{loading ? 'Loading video...' : (embedError ? 'Embed error' : 'Video')}</div>
         <div style={{ display: 'flex', gap: 8 }}>
           <a href={browserUrl} target="_blank" rel="noopener noreferrer" style={{ padding: '7px 10px', background: '#2563eb', color: '#fff', borderRadius: 6, textDecoration: 'none', fontSize: 13 }}>
             Open in browser
           </a>
-          <button onClick={() => { // reload embed
-            try {
-              if (apiRef.current && apiRef.current.dispose) apiRef.current.dispose()
-              apiRef.current = null
-            } catch (e) { /* ignore */ }
-            setEmbedError(null); setLoading(true); mountJitsi()
-          }} style={{ padding: '6px 10px', borderRadius: 6 }}>Reload embed</button>
+          <button onClick={() => { try { if (apiRef.current && apiRef.current.dispose) apiRef.current.dispose(); apiRef.current = null } catch (e) {} setEmbedError(null); setLoading(true); mountJitsi() }} style={{ padding: '6px 10px', borderRadius: 6 }}>Reload embed</button>
           <button onClick={() => reportSession('stuck-embed')} style={{ padding: '6px 10px', borderRadius: 6, background: '#ef4444', color: '#fff' }}>Report</button>
         </div>
       </div>
 
       <div ref={containerRef} style={{ width: '100%', height: 520, borderRadius: 8, overflow: 'hidden', background: '#000' }}>
-        {/* Jitsi will mount here. If embedError, show message and fallback iframe */}
         {embedError && (
           <div style={{ color: '#fff', padding: 18 }}>
             <div style={{ marginBottom: 12 }}>{embedError}</div>
-            <div style={{ fontSize: 13, opacity: 0.9 }}>If the embed keeps showing the moderator/waiting screen, click "Open in browser". That opens the same meeting in a full tab which bypasses embed quirks on mobile.</div>
+            <div style={{ fontSize: 13, opacity: 0.9 }}>Click "Open in browser" to join the meeting full-page.</div>
             <div style={{ height: 12 }} />
-            <iframe title={`Jitsi ${roomName}`} src={browserUrl} style={{ width: '100%', height: 420, border: 0 }} allow="camera; microphone; fullscreen; display-capture" />
+            <iframe title={`Jitsi ${roomName}`} src={`https://${domain}/${encodeURIComponent(roomName)}#userInfo.displayName="${encodeURIComponent(displayName || 'Student')}"`} style={{ width: '100%', height: 420, border: 0 }} allow="camera; microphone; fullscreen; display-capture" />
           </div>
         )}
       </div>
+
       <div style={{ marginTop: 8, fontSize: 13, color: '#666' }}>
         Participants: {participants} • Joined: {joined ? 'yes' : 'no'}
       </div>
     </div>
   )
-      }
+}
