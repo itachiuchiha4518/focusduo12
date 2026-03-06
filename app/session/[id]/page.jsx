@@ -1,132 +1,224 @@
-// app/session/[id]/page.jsx  (OVERWRITE)
 'use client'
-import { usePathname, useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
-import dynamic from 'next/dynamic'
-import { db, doc, getDoc, collection, runTransaction } from '../../../lib/firebase'
-import { auth, onAuthStateChanged } from '../../../lib/firebase'
-const JitsiRoom = dynamic(() => import('../../../components/JitsiRoom'), { ssr: false })
 
-export default function SessionPage(){
+import React, { useEffect, useState } from 'react'
+import { useParams, useRouter } from 'next/navigation'
+import PeerRoom from '../../../components/PeerRoom'   // p2p 1-on-1 component (overwrite earlier)
+import JitsiRoom from '../../../components/JitsiRoom' // group Jitsi component (if used)
+
+/*
+  Firestore / Auth helpers from your lib/firebase.
+  Make sure lib/firebase exports these (the version I gave earlier does).
+*/
+import {
+  auth,
+  onAuthStateChanged,
+  db,
+  doc,
+  onSnapshot,
+  setDoc,
+  getDoc
+} from '../../../lib/firebase'
+
+const ADMIN_UID = 'NIsbHB9RmXgR5vJEyv8CuV0ggD03' // admin UID you gave earlier
+
+export default function SessionPage() {
+  const { id } = useParams() // session id from URL
   const router = useRouter()
-  const pathname = usePathname()
-  const id = pathname?.split('/').pop() || ''
-  const [session, setSession] = useState(null)
+
   const [user, setUser] = useState(null)
-  const [joined, setJoined] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [loadingUser, setLoadingUser] = useState(true)
+
+  const [session, setSession] = useState(null)
+  const [loadingSession, setLoadingSession] = useState(true)
   const [error, setError] = useState(null)
 
-  useEffect(()=>{
-    const unsub = onAuthStateChanged(auth, u => setUser(u || null))
-    return () => unsub && unsub()
-  },[])
-
-  useEffect(()=>{
-    if (!id) return
-    let mounted = true
-    const load = async () => {
-      try {
-        const snap = await getDoc(doc(db,'sessions', id))
-        if (snap.exists()) {
-          if (mounted) setSession(snap.data())
-        } else {
-          setError('Session not found')
-        }
-      } catch(e){
-        console.error('load session', e)
-        setError(String(e.message || e))
-      } finally {
-        if (mounted) setLoading(false)
+  // listen auth
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (!u) {
+        router.push('/') // if not logged in, go home
+        return
       }
-    }
-    load()
-    // no auto-starting; user must explicitly press Start meeting
-    return ()=> { mounted = false }
-  },[id])
+      setUser(u)
+      setLoadingUser(false)
+    })
+    return () => unsub && unsub()
+  }, [router])
 
-  // Start meeting only if there are 2 participants (prevent starting alone)
-  async function startMeeting(){
-    setError(null)
-    if (!user) return alert('Sign in required')
-    if (!session) return alert('Session missing')
-    if (!session.participants || session.participants.length < 2) {
-      return alert('Waiting for a partner. Start meeting is enabled only when another participant is present.')
-    }
+  // subscribe to session doc
+  useEffect(() => {
+    if (!id) return
+    setLoadingSession(true)
+    const sRef = doc(db, 'sessions', id)
+    const unsub = onSnapshot(sRef, (snap) => {
+      if (!snap.exists()) {
+        setSession(null)
+        setLoadingSession(false)
+        setError('Session not found')
+        return
+      }
+      const data = snap.data()
+      setSession(data)
+      setLoadingSession(false)
+      setError(null)
+    }, (err) => {
+      console.warn('session snapshot error', err)
+      setError('Error reading session: ' + (err.message || err))
+      setLoadingSession(false)
+    })
 
+    return () => unsub && unsub()
+  }, [id])
+
+  if (loadingUser || loadingSession) {
+    return (
+      <div style={{ padding: 20 }}>
+        <h2>Loading session...</h2>
+        <div style={{ color: '#666' }}>If this takes long, refresh the page once.</div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div style={{ padding: 20 }}>
+        <h2>Error</h2>
+        <div style={{ color: 'red' }}>{error}</div>
+        <div style={{ marginTop: 12 }}>
+          <button onClick={() => router.push('/')} style={{ padding: '8px 12px' }}>Back to dashboard</button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!session) {
+    return (
+      <div style={{ padding: 20 }}>
+        <h2>Session not found</h2>
+        <div style={{ marginTop: 12 }}>
+          <button onClick={() => router.push('/')} style={{ padding: '8px 12px' }}>Back to dashboard</button>
+        </div>
+      </div>
+    )
+  }
+
+  // session fields expectation:
+  // session.users -> array of UIDs (creator first)
+  // session.names -> array of display names (parallel to users)
+  // session.mode -> 'one-on-one' or 'group'
+  // session.exam, session.subject
+  const users = session.users || []
+  const names = session.names || []
+  const mode = (session.mode || 'one-on-one')
+  const exam = session.exam || ''
+  const subject = session.subject || ''
+  const sessionStatus = session.status || 'waiting' // waiting | active | finished
+
+  const isParticipant = user && users.includes(user.uid)
+  const isCreator = user && users[0] === user.uid
+  const otherIndex = users[0] === user.uid ? 1 : 0
+  const matchedWithName = names[otherIndex] || (users.length > 1 ? users[otherIndex] : null)
+
+  // start meeting: only the creator can mark session active (this triggers the media components)
+  const startMeeting = async () => {
     try {
-      await runTransaction(db, async (t) => {
-        const sRef = doc(db,'sessions', id)
-        const sSnap = await t.get(sRef)
-        if (!sSnap.exists()) throw new Error('session-missing')
-        const sData = sSnap.data()
-
-        if (sData.status === 'active') {
-          const presRef = doc(collection(db, `sessions/${id}/presence`))
-          t.set(presRef, { uid: user.uid, joinedAt: new Date().toISOString() })
-          return
-        }
-
-        if (sData.status === 'matched') {
-          t.update(sRef, { status: 'active', startedAt: new Date().toISOString() })
-          const presRef = doc(collection(db, `sessions/${id}/presence`))
-          t.set(presRef, { uid: user.uid, joinedAt: new Date().toISOString() })
-          return
-        }
-
-        throw new Error('invalid-session-state')
-      })
-
-      const sSnap2 = await getDoc(doc(db,'sessions', id))
-      if (sSnap2.exists()) setSession(sSnap2.data())
-      setJoined(true)
-    } catch(e){
-      console.error('startMeeting error', e)
-      setError(String(e.message || e))
-      alert('Failed to start meeting: ' + (e.message || e))
+      const sRef = doc(db, 'sessions', id)
+      await setDoc(sRef, { status: 'active', startedAt: Date.now() }, { merge: true })
+    } catch (e) {
+      console.error('startMeeting failed', e)
+      alert('Could not start meeting: ' + (e.message || e))
     }
   }
 
-  if (loading) return <div style={{padding:20}}>Loading session...</div>
-  if (error) return <div style={{padding:20, color:'red'}}>Error: {error}</div>
-  if (!session) return <div style={{padding:20}}>Session data missing</div>
+  // leave session (simple client-side leave) - not removing doc server-side
+  const leaveSession = async () => {
+    try {
+      // just navigate back to dashboard. session cleanup handled elsewhere.
+      router.push('/')
+    } catch (e) {
+      console.warn('leaveSession', e)
+    }
+  }
 
-  // display partner names excluding current user (if available)
-  const partnerNames = (session.participantNames || []).filter(n => n && n !== (user?.displayName || user?.email))
-  const partnerLabel = partnerNames.length ? partnerNames.join(', ') : (session.participantNames && session.participantNames.length ? session.participantNames[0] : 'Partner')
-
+  // minimal UI
   return (
-    <div style={{padding:20}}>
-      <h2>Session</h2>
-      <div>{session.exam?.toUpperCase()} • {session.subject?.toUpperCase()}</div>
-      <div style={{marginTop:8}}>Matched with: <strong>{partnerLabel}</strong></div>
-      <div style={{marginTop:8}}>Session status: <strong>{session.status}</strong></div>
-      <div style={{marginTop:12}}>
-        {(!joined) ? (
-          <div>
-            <div style={{marginBottom:8}}>Press <strong>Start meeting</strong> when your partner is present. Start is <strong>disabled</strong> until 2 participants are listed.</div>
-            <button onClick={startMeeting} className="btn-primary" disabled={!(session.participants && session.participants.length >= 2)}>Start meeting</button>
+    <div style={{ padding: 18, maxWidth: 980, margin: '0 auto' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1 style={{ margin: 0 }}>Session</h1>
+          <div style={{ color: '#666' }}>{exam.toUpperCase()} • {subject.toUpperCase()}</div>
+        </div>
+
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 14 }}>{user.displayName || user.email}</div>
+          <div style={{ fontSize: 12, color: '#666' }}>uid: {user.uid}</div>
+        </div>
+      </header>
+
+      <section style={{ marginTop: 18 }}>
+        <div style={{ padding: 14, borderRadius: 12, background: '#fff', boxShadow: '0 8px 24px rgba(15,23,42,0.04)' }}>
+          <div style={{ fontSize: 18, marginBottom: 6 }}>
+            {mode === 'one-on-one' ? 'Matched with:' : 'Participants:'}
+            {' '}
+            <strong style={{ color: '#0f172a' }}>
+              {mode === 'one-on-one' ? (matchedWithName || 'Waiting...') : (users.length || 0)}
+            </strong>
           </div>
-        ) : (
-          <div>
-            <div style={{marginBottom:8}}>You joined. Jitsi is below.</div>
+
+          <div style={{ marginTop: 6 }}>
+            Session status: <strong style={{ color: sessionStatus === 'active' ? 'green' : '#0f172a' }}>{sessionStatus}</strong>
+          </div>
+
+          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+            {isCreator && sessionStatus !== 'active' && (
+              <button onClick={startMeeting} style={{ padding: '10px 14px', background: '#0b74ff', color: '#fff', borderRadius: 8 }}>
+                Start meeting
+              </button>
+            )}
+            <button onClick={leaveSession} style={{ padding: '10px 14px', borderRadius: 8 }}>Leave</button>
+
+            {user.uid === ADMIN_UID && (
+              <button onClick={() => router.push('/admin')} style={{ padding: '10px 14px', borderRadius: 8 }}>Admin</button>
+            )}
+
+            <button onClick={() => router.push('/')} style={{ padding: '10px 14px', borderRadius: 8 }}>Back to dashboard</button>
+          </div>
+        </div>
+      </section>
+
+      <section style={{ marginTop: 20 }}>
+        {/* Render the correct video component based on mode */}
+        {sessionStatus !== 'active' && (
+          <div style={{ marginBottom: 12, color: '#666' }}>
+            The meeting will start when the session status is active. Creator can press "Start meeting".
           </div>
         )}
-      </div>
 
-      <div style={{marginTop:18}}>
-        {joined && session.status === 'active' && session.participants && session.participants.length >= 2 ? (
-          <div style={{height:600}}>
-            <JitsiRoom roomId={id} displayName={user?.displayName || user?.email || 'Student'} />
+        {sessionStatus === 'active' && mode === 'one-on-one' && (
+          <div>
+            {/* Full file ready: PeerRoom mounted for 1-on-1 peer-to-peer */}
+            <PeerRoom
+              sessionId={id}
+              localName={user.displayName || user.email}
+              userUid={user.uid}
+              isInitiator={isCreator}
+            />
           </div>
-        ) : (
-          <div style={{padding:20, background:'#fafafa', borderRadius:8}}>Waiting to start video... (partner must be present and you must press Start meeting).</div>
         )}
-      </div>
 
-      <div style={{marginTop:18}}>
-        <a href="/dashboard">Back to dashboard</a>
-      </div>
+        {sessionStatus === 'active' && mode === 'group' && (
+          <div>
+            {/* Group sessions use JitsiRoom (keeps jitsi for groups) */}
+            <JitsiRoom roomId={id} displayName={user.displayName || user.email} sessionId={id} />
+          </div>
+        )}
+
+        {sessionStatus !== 'active' && (
+          <div style={{ marginTop: 22, color: '#888' }}>
+            Waiting for the creator to start the session...
+          </div>
+        )}
+      </section>
     </div>
   )
-    }
+}
