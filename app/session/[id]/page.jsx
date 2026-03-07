@@ -11,7 +11,6 @@ export default function SessionPage() {
   const router = useRouter()
   const [displayName, setDisplayName] = useState('Student')
 
-  // Optional: try to get displayName from firebase auth if signed in (non-blocking)
   useEffect(() => {
     try {
       const user = auth?.currentUser
