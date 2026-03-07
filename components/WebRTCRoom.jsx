@@ -1,10 +1,12 @@
 // components/WebRTCRoom.jsx
 'use client'
 import React, { useEffect, useRef, useState } from 'react'
-import { doc, setDoc, getDoc, onSnapshot, collection, addDoc, query, getDocs, deleteDoc } from 'firebase/firestore'
+import {
+  doc, setDoc, getDoc, collection, addDoc, onSnapshot, getDocs, deleteDoc
+} from 'firebase/firestore'
 import { db } from '../lib/firebase'
 
-export default function WebRTCRoom({ roomId, displayName = 'Student' }) {
+export default function WebRTCRoom({ roomId = 'demo', displayName = 'Student' }) {
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
   const pcRef = useRef(null)
@@ -18,60 +20,45 @@ export default function WebRTCRoom({ roomId, displayName = 'Student' }) {
 
     async function start() {
       setStatus('starting')
+
       try {
-        // Create peer connection
         const configuration = {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' }
-            // If you need a TURN server for NAT, add it here. Without TURN some networks may fail.
+            // add TURN server here if you need NAT traversal on restrictive networks
           ]
         }
+
         const pc = new RTCPeerConnection(configuration)
         pcRef.current = pc
 
-        // Prepare video elements
         const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
         if (!mounted) return
         localVideoRef.current.srcObject = localStream
         localVideoRef.current.muted = true
 
-        // Add tracks to connection
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream))
 
-        // Remote stream handling
         const remoteStream = new MediaStream()
         remoteVideoRef.current.srcObject = remoteStream
         pc.ontrack = (event) => {
           event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track))
         }
 
-        // Candidate handling
-        const callerCandidatesCollection = collection // placeholder; actual used below
-        pc.onicecandidate = (event) => {
-          if (!event.candidate) return
-          // will push candidate to Firestore subcollection below (varies for caller/callee)
-        }
-
-        // Firestore room ref
-        const roomsCol = 'webrtcRooms' // collection name
+        // ROOM document reference
+        const roomsCol = 'webrtcRooms'
         const rRef = doc(db, roomsCol, roomId)
         roomRef.current = rRef
 
         const roomSnap = await getDoc(rRef)
         if (!roomSnap.exists()) {
-          // create room (caller)
+          // ---- creator (caller) ----
           setIsCreator(true)
-          // create empty doc - we'll set offer below
-          await setDoc(rRef, {
-            createdAt: new Date().toISOString(),
-            createdBy: displayName || 'caller'
-          })
+          await setDoc(rRef, { createdAt: new Date().toISOString(), createdBy: displayName || 'caller' })
 
-          // create subcollections by adding documents (we'll add candidates with addDoc)
           const callerCandidatesRef = collection(db, roomsCol, roomId, 'callerCandidates')
           const calleeCandidatesRef = collection(db, roomsCol, roomId, 'calleeCandidates')
 
-          // gather ICE candidates and push to callerCandidates
           pc.onicecandidate = async (event) => {
             if (event.candidate) {
               try {
@@ -82,20 +69,23 @@ export default function WebRTCRoom({ roomId, displayName = 'Student' }) {
             }
           }
 
-          // create offer
           const offerDescription = await pc.createOffer()
           await pc.setLocalDescription(offerDescription)
 
-          // write offer to Firestore
-          await setDoc(rRef, { offer: { type: offerDescription.type, sdp: offerDescription.sdp }, createdAt: new Date().toISOString(), createdBy: displayName || 'caller' }, { merge: true })
+          await setDoc(rRef, {
+            offer: { type: offerDescription.type, sdp: offerDescription.sdp },
+            createdAt: new Date().toISOString(),
+            createdBy: displayName || 'caller'
+          }, { merge: true })
 
           // listen for answer
           const unsubscribeRoom = onSnapshot(rRef, async (snapshot) => {
             const data = snapshot.data()
             if (!data) return
-            if (data.answer && !pc.remoteDescription) {
+            if (data.answer && pc && !pc.remoteDescription) {
               const answerDesc = new RTCSessionDescription(data.answer)
               await pc.setRemoteDescription(answerDesc)
+              setStatus('connected')
             }
           })
 
@@ -116,20 +106,16 @@ export default function WebRTCRoom({ roomId, displayName = 'Student' }) {
 
           setStatus('waiting-for-answer')
 
-          // cleanup on unmount
           return () => {
-            unsubscribeRoom()
-            unsubscribeCalleeCandidates()
+            unsubscribeRoom && unsubscribeRoom()
+            unsubscribeCalleeCandidates && unsubscribeCalleeCandidates()
           }
-
         } else {
-          // join existing room (callee)
+          // ---- joiner (callee) ----
           setIsCreator(false)
-
           const callerCandidatesColRef = collection(db, roomsCol, roomId, 'callerCandidates')
           const calleeCandidatesColRef = collection(db, roomsCol, roomId, 'calleeCandidates')
 
-          // add ICE candidates to calleeCandidates
           pc.onicecandidate = async (event) => {
             if (event.candidate) {
               try {
@@ -140,19 +126,15 @@ export default function WebRTCRoom({ roomId, displayName = 'Student' }) {
             }
           }
 
-          // read offer
           const data = roomSnap.data()
           const offer = data.offer
-          if (!offer) {
-            throw new Error('Room has no offer.')
-          }
+          if (!offer) throw new Error('Room has no offer.')
+
           await pc.setRemoteDescription(new RTCSessionDescription(offer))
 
-          // create answer
           const answerDescription = await pc.createAnswer()
           await pc.setLocalDescription(answerDescription)
 
-          // write answer
           await setDoc(rRef, { answer: { type: answerDescription.type, sdp: answerDescription.sdp } }, { merge: true })
 
           // listen for caller candidates
@@ -171,12 +153,10 @@ export default function WebRTCRoom({ roomId, displayName = 'Student' }) {
 
           setStatus('connected')
 
-          // cleanup on unmount
           return () => {
-            unsubscribeCallerCandidates()
+            unsubscribeCallerCandidates && unsubscribeCallerCandidates()
           }
         }
-
       } catch (err) {
         console.error('WebRTC start error', err)
         setError(String(err?.message || err))
@@ -188,54 +168,47 @@ export default function WebRTCRoom({ roomId, displayName = 'Student' }) {
 
     return () => {
       mounted = false
-      // cleanup peer connection
-      if (pcRef.current) {
-        try {
-          pcRef.current.getSenders().forEach(s => {
-            if (s.track) s.track.stop()
-          })
-        } catch (e) {}
-        try {
+      try {
+        if (pcRef.current) {
+          pcRef.current.getSenders().forEach(s => { if (s.track) s.track.stop() })
           pcRef.current.close()
-        } catch (e) {}
-        pcRef.current = null
-      }
+          pcRef.current = null
+        }
+      } catch (e) {}
     }
   }, [roomId, displayName])
 
   async function hangUp() {
     setStatus('ending')
-    // close local tracks
     try {
       if (localVideoRef.current && localVideoRef.current.srcObject) {
         localVideoRef.current.srcObject.getTracks().forEach(t => t.stop())
       }
     } catch (e) {}
-    // remove room from firestore (caller should do this)
+
     try {
       if (roomRef.current) {
-        // delete subcollections: callerCandidates & calleeCandidates
-        const callerCandidatesSnapshot = await getDocs(collection(db, 'webrtcRooms', roomId, 'callerCandidates'))
-        const calleeCandidatesSnapshot = await getDocs(collection(db, 'webrtcRooms', roomId, 'calleeCandidates'))
-        for (const docSnap of callerCandidatesSnapshot.docs) {
+        const callerSnap = await getDocs(collection(db, 'webrtcRooms', roomId, 'callerCandidates'))
+        const calleeSnap = await getDocs(collection(db, 'webrtcRooms', roomId, 'calleeCandidates'))
+        for (const docSnap of callerSnap.docs) {
           await deleteDoc(doc(db, 'webrtcRooms', roomId, 'callerCandidates', docSnap.id))
         }
-        for (const docSnap of calleeCandidatesSnapshot.docs) {
+        for (const docSnap of calleeSnap.docs) {
           await deleteDoc(doc(db, 'webrtcRooms', roomId, 'calleeCandidates', docSnap.id))
         }
-        // delete room doc
         await deleteDoc(roomRef.current)
       }
     } catch (e) {
       console.warn('Error cleaning up firestore', e)
     }
-    // close pc
+
     try {
       if (pcRef.current) {
         pcRef.current.close()
         pcRef.current = null
       }
     } catch (e) {}
+
     setStatus('ended')
   }
 
@@ -263,4 +236,4 @@ export default function WebRTCRoom({ roomId, displayName = 'Student' }) {
       </div>
     </div>
   )
-          }
+}
