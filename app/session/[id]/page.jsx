@@ -2,16 +2,18 @@
 'use client'
 import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import SimpleJitsi from '../../components/SimpleJitsi' // safe iframe component
+import SimpleJitsi from '../../../components/SimpleJitsi' // <-- corrected path (3 levels up to project root)
 
 export default function SessionPage(){
-  const { id } = useParams()
+  const params = useParams()
+  const id = params?.id || 'demo'
   const router = useRouter()
   const [status, setStatus] = useState('waiting')
 
   useEffect(()=>{
-    // in safe-mode, status goes active automatically
-    setTimeout(()=> setStatus('active'), 600)
+    // in safe-mode, auto-activate quickly for demo
+    const t = setTimeout(()=> setStatus('active'), 600)
+    return () => clearTimeout(t)
   },[])
 
   return (
@@ -22,7 +24,9 @@ export default function SessionPage(){
       </div>
 
       <div style={{ marginTop: 12 }}>
-        <div>Session status: <strong style={{ color: status === 'active' ? 'green' : '#374151' }}>{status}</strong></div>
+        <div>
+          Session status: <strong style={{ color: status === 'active' ? 'green' : '#374151' }}>{status}</strong>
+        </div>
       </div>
 
       <div style={{ marginTop: 18 }}>
