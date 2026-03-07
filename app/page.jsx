@@ -9,7 +9,7 @@ export default function HomePage() {
     <div style={{ padding: 22 }}>
       <h1 style={{ margin: 0 }}>FocusDuo — Safe Mode</h1>
       <p style={{ color: '#374151' }}>
-        Site is running in a temporary safe mode. Real-time features (Firebase / Jitsi / WebRTC) are disabled to remove the client crash.
+        This is a temporary safe build so your site can deploy. Matchmaking and video are disabled here — demo flows only.
       </p>
 
       <div style={{ marginTop: 18, display: 'flex', gap: 12 }}>
@@ -36,7 +36,7 @@ export default function HomePage() {
       </div>
 
       <div style={{ marginTop: 20, color: '#6b7280' }}>
-        After this loads, tell me “safe-mode loaded” and I’ll bring back video step-by-step.
+        After this loads on your domain, tell me “safe deploy ok” and I will restore core features step-by-step.
       </div>
     </div>
   )
