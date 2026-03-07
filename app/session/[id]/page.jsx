@@ -2,18 +2,19 @@
 'use client'
 import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import SimpleJitsi from '../../../components/SimpleJitsi'
+import JitsiClient from '../../../components/JitsiClient'
 
-export default function SessionPage(){
+export default function SessionPage() {
   const params = useParams()
   const id = params?.id || 'demo'
   const router = useRouter()
   const [status, setStatus] = useState('waiting')
+  const [displayName, setDisplayName] = useState('Student')
 
-  useEffect(()=>{
-    const t = setTimeout(()=> setStatus('active'), 600)
+  useEffect(() => {
+    const t = setTimeout(() => setStatus('active'), 600)
     return () => clearTimeout(t)
-  },[])
+  }, [])
 
   return (
     <div style={{ padding: 18 }}>
@@ -31,7 +32,19 @@ export default function SessionPage(){
       <div style={{ marginTop: 18 }}>
         {status === 'active' ? (
           <div>
-            <SimpleJitsi roomId={id} displayName={'Demo User'} />
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ marginRight: 8 }}>Display name:</label>
+              <input
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid #ddd' }}
+              />
+            </div>
+
+            <JitsiClient roomId={id} displayName={displayName} onApiReady={(api) => {
+              // useful place to attach extra listeners if needed
+              console.log('Jitsi API ready', api)
+            }} />
           </div>
         ) : (
           <div style={{ color: '#6b7280' }}>Waiting for session to start...</div>
