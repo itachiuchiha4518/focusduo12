@@ -1,11 +1,6 @@
 // components/SimpleJitsi.jsx
 'use client'
 
-/*
-  Minimal, self-contained iframe embed for meet.jit.si.
-  No firebase imports. No window.* at module scope.
-*/
-
 export default function SimpleJitsi({ roomId, displayName }) {
   const domain = 'meet.jit.si'
   const roomName = `FocusDuo_${roomId}`
