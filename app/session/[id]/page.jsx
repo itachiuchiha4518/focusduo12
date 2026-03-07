@@ -2,7 +2,7 @@
 'use client'
 import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import SimpleJitsi from '../../../components/SimpleJitsi' // <-- corrected path (3 levels up to project root)
+import SimpleJitsi from '../../../components/SimpleJitsi'
 
 export default function SessionPage(){
   const params = useParams()
@@ -11,7 +11,6 @@ export default function SessionPage(){
   const [status, setStatus] = useState('waiting')
 
   useEffect(()=>{
-    // in safe-mode, auto-activate quickly for demo
     const t = setTimeout(()=> setStatus('active'), 600)
     return () => clearTimeout(t)
   },[])
