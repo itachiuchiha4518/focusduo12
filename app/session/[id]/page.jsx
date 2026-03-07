@@ -13,8 +13,8 @@ export default function SessionPage() {
 
   useEffect(() => {
     try {
-      const user = auth?.currentUser
-      if (user) setDisplayName(user.displayName || user.email || 'Student')
+      const u = auth?.currentUser
+      if (u) setDisplayName(u.displayName || u.email || 'Student')
     } catch (e) {}
   }, [])
 
@@ -22,7 +22,7 @@ export default function SessionPage() {
     <div style={{ padding: 18 }}>
       <h2>Session — {id}</h2>
       <div style={{ marginTop: 8, color: '#374151' }}>
-        Mode: <strong>{id === 'demo' ? 'one-on-one' : 'one-on-one'}</strong>
+        Mode: <strong>1-on-1 (WebRTC)</strong>
       </div>
 
       <div style={{ marginTop: 12 }}>
