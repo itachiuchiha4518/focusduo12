@@ -1,43 +1,26 @@
 // app/page.jsx
-'use client'
-import { useRouter } from 'next/navigation'
-
-export default function HomePage() {
-  const router = useRouter()
-
+export default function Home() {
   return (
-    <div style={{ padding: 22 }}>
-      <h1 style={{ margin: 0 }}>FocusDuo — Safe Mode</h1>
-      <p style={{ color: '#374151' }}>
-        This is a temporary safe build so your site can deploy. Matchmaking and video are disabled here — demo flows only.
-      </p>
+    <div style={{padding:20}}>
+      <h1 style={{marginTop:6}}>FocusDuo — Study together</h1>
+      <p style={{color:'#555'}}>Structured study sessions with social accountability. Join a session or go to dashboard.</p>
 
-      <div style={{ marginTop: 18, display: 'flex', gap: 12 }}>
-        <button
-          onClick={() => router.push('/dashboard')}
-          style={{ padding: '10px 14px', background: '#0b74ff', color: '#fff', borderRadius: 8, border: 0 }}
-        >
-          Go to Dashboard
-        </button>
-
-        <button
-          onClick={() => router.push('/join?mode=one-on-one&exam=jee&subject=physics')}
-          style={{ padding: '10px 14px', borderRadius: 8 }}
-        >
-          Simulate Join 1-on-1
-        </button>
-
-        <button
-          onClick={() => router.push('/session/demo')}
-          style={{ padding: '10px 14px', borderRadius: 8 }}
-        >
-          Open Demo Session
-        </button>
+      <div style={{display:'flex', gap:12, marginTop:20}}>
+        <a href="/join"><button>Join a session</button></a>
+        <a href="/dashboard"><button style={{background:'#444'}}>Dashboard</button></a>
       </div>
 
-      <div style={{ marginTop: 20, color: '#6b7280' }}>
-        After this loads on your domain, tell me “safe deploy ok” and I will restore core features step-by-step.
-      </div>
+      <section style={{marginTop:30}}>
+        <div className="card">
+          <h3>How it works</h3>
+          <ol>
+            <li>Sign in with Google</li>
+            <li>Choose exam, subject and mode (1-on-1 or group)</li>
+            <li>Join the queue — you will be matched instantly when another user is waiting in same queue</li>
+            <li>When matched, start the session — video will run through WebRTC inside our page</li>
+          </ol>
+        </div>
+      </section>
     </div>
   )
 }
