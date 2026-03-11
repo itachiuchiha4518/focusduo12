@@ -1,41 +1,42 @@
+// app/session/[id]/page.jsx
 'use client'
-import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
+import { db, auth } from '../../../lib/firebase'
+import { doc, onSnapshot } from 'firebase/firestore'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 
-export default function SessionPage({ params }) {
-  const id = params.id
-  const [status, setStatus] = useState('initializing')
+// dynamic import to avoid SSR issues with getUserMedia/RTCPeerConnection
+const WebRTCRoom = dynamic(() => import('../../../components/WebRTCRoom'), { ssr: false })
 
+export default function SessionPage({ params }) {
+  const sessionId = params.id
+  const [session, setSession] = useState(null)
   useEffect(() => {
-    // placeholder: later we will connect to Firestore to get real session status
-    setTimeout(()=> setStatus('active'), 800)
-  }, [])
+    const ref = doc(db, 'sessions', sessionId)
+    const unsub = onSnapshot(ref, snap => {
+      if (snap.exists()) setSession({ id: snap.id, ...snap.data() })
+    })
+    return () => unsub()
+  }, [sessionId])
 
   return (
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <h2>Session — {id}</h2>
-        <div><Link href="/dashboard"><button>Back to dashboard</button></Link></div>
+        <h2>Session — {session ? session.exam + ' • ' + session.subject : sessionId}</h2>
+        <div><Link href="/"><button>Home</button></Link></div>
       </div>
 
-      <p>Mode: one-on-one</p>
-      <p>Session status: <strong style={{color: status === 'active' ? 'green' : '#444'}}>{status}</strong></p>
-
-      <div style={{marginTop:16}}>
-        <div style={{width:'100%',height:420, borderRadius:16, overflow:'hidden', background:'#111', color:'#fff', display:'flex',alignItems:'center',justifyContent:'center'}}>
-          {/* This is a placeholder area for the video embed. We'll replace with actual WebRTC/Jitsi embed after baseline is stable. */}
-          <div style={{textAlign:'center',padding:20}}>
-            <div style={{fontSize:20,fontWeight:700}}>Video placeholder</div>
-            <div style={{marginTop:8,fontSize:13,opacity:0.9}}>Video UI will appear here</div>
+      {session ? (
+        <>
+          <p>Participants: {session.participants?.length ?? 0}</p>
+          <div style={{marginTop:16}}>
+            <WebRTCRoom sessionId={sessionId} session={session} />
           </div>
-        </div>
-
-        <div style={{marginTop:12}}>
-          <button>Join meeting</button>
-          <button style={{marginLeft:10, background:'#eee', color:'#111'}}>Fullscreen</button>
-        </div>
-      </div>
+        </>
+      ) : (
+        <p>Loading session…</p>
+      )}
     </div>
   )
 }
