@@ -1,25 +1,21 @@
-// app/page.jsx
+import Link from 'next/link'
+
 export default function Home() {
   return (
-    <div style={{padding:20}}>
-      <h1 style={{marginTop:6}}>FocusDuo — Study together</h1>
-      <p style={{color:'#555'}}>Structured study sessions with social accountability. Join a session or go to dashboard.</p>
-
-      <div style={{display:'flex', gap:12, marginTop:20}}>
-        <a href="/join"><button>Join a session</button></a>
-        <a href="/dashboard"><button style={{background:'#444'}}>Dashboard</button></a>
-      </div>
-
-      <section style={{marginTop:30}}>
-        <div className="card">
-          <h3>How it works</h3>
-          <ol>
-            <li>Sign in with Google</li>
-            <li>Choose exam, subject and mode (1-on-1 or group)</li>
-            <li>Join the queue — you will be matched instantly when another user is waiting in same queue</li>
-            <li>When matched, start the session — video will run through WebRTC inside our page</li>
-          </ol>
+    <div>
+      <header style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:24}}>
+        <h1 style={{margin:0}}>FocusDuo</h1>
+        <div>
+          <Link href="/dashboard"><button>Dashboard</button></Link>
         </div>
+      </header>
+
+      <section style={{padding:20, borderRadius:12, background:'#f6fbff', boxShadow:'0 6px 18px rgba(10,20,50,0.06)'}}>
+        <h2>Study with accountability</h2>
+        <p>Structured sessions • Streaks • Minimal UI</p>
+        <p style={{marginTop:18}}>
+          <Link href="/join"><button style={{padding:'10px 18px'}}>Join a study session</button></Link>
+        </p>
       </section>
     </div>
   )
