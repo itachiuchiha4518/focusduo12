@@ -1,68 +1,71 @@
-// app/session/[id]/page.jsx
-'use client'
-
+// pages/session/[id].js
 import React, { useEffect, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
-import { doc, onSnapshot, getDoc } from 'firebase/firestore'
-import { db } from '../../../lib/firebase'
-import WebRTCRoom from '../../../components/WebRTCRoom'
+import { useRouter } from 'next/router'
+import { auth, db } from '../../lib/firebase'
+import { doc, setDoc, serverTimestamp, onSnapshot } from 'firebase/firestore'
+import dynamic from 'next/dynamic'
+
+const WebRTCRoom = dynamic(() => import('../../components/WebRTCRoom'), { ssr: false })
 
 export default function SessionPage() {
-  const { id } = useParams()
   const router = useRouter()
+  const { id } = router.query
+  const [user, setUser] = useState(auth.currentUser)
   const [session, setSession] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [joined, setJoined] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!id) return
-    setLoading(true)
-    const sRef = doc(db, 'sessions', id)
-    const unsub = onSnapshot(sRef, (snap) => {
-      if (!snap.exists()) {
-        setSession(null)
-        setLoading(false)
-        setError('Session not found')
-        return
-      }
-      setSession(snap.data())
-      setLoading(false)
-      setError(null)
-    }, (err) => {
-      console.warn('session snapshot error', err)
-      setError('Error reading session')
-      setLoading(false)
-    })
+    const unsub = auth.onAuthStateChanged(u => setUser(u))
+    return () => unsub()
+  }, [])
 
-    return () => unsub && unsub()
+  useEffect(() => {
+    if (!id) return
+    const ref = doc(db, 'sessions', id)
+    const unsub = onSnapshot(ref, snap => {
+      if (!snap.exists()) return setSession(null)
+      setSession(snap.data())
+    }, err => setError('Session read error: ' + (err.message||err)))
+    return () => unsub()
   }, [id])
 
-  if (loading) return <div style={{ padding: 18 }}>Loading session...</div>
-  if (error) return <div style={{ padding: 18, color: 'red' }}>{error}</div>
-  if (!session) return <div style={{ padding: 18 }}>No session found.</div>
+  async function join() {
+    setError(null)
+    if (!user) { setError('Sign in required on this device'); return }
+    if (!id) { setError('No session id'); return }
+    try {
+      await setDoc(doc(db, 'sessions', id, 'participants', user.uid), {
+        uid: user.uid, displayName: user.displayName || user.email || '', joinedAt: serverTimestamp()
+      })
+      setJoined(true)
+    } catch (e) {
+      setError('Failed to join session: ' + (e.message||e))
+    }
+  }
 
-  const { exam, subject, mode } = session
-  // use the session id as roomId for WebRTCRoom
+  async function leave() {
+    try {
+      if (user && id) {
+        await setDoc(doc(db, 'sessions', id, 'participants', user.uid), { leftAt: serverTimestamp() }, { merge: true })
+      }
+    } catch (e) {}
+    router.push('/join')
+  }
+
   return (
-    <div style={{ padding: 18, maxWidth: 980, margin: '0 auto' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <h1 style={{ margin: 0 }}>Session</h1>
-          <div style={{ color: '#666' }}>{(exam || '').toUpperCase()} • {(subject || '').toUpperCase()} • {mode}</div>
-        </div>
-      </header>
+    <div style={{ padding: 18 }}>
+      <h2>Session: {id}</h2>
+      <div>Mode: {session?.mode || '—'}</div>
+      <div>Exam/Subject: {session?.exam}/{session?.subject}</div>
+      <div style={{ marginTop: 12 }}>
+        {!joined ? <button onClick={join}>Join meeting</button> : <button onClick={leave}>Leave</button>}
+        {error && <div style={{ color: 'red', marginTop: 10 }}>{error}</div>}
+      </div>
 
-      <section style={{ marginTop: 18 }}>
-        <div style={{ padding: 14, borderRadius: 12, background: '#fff', boxShadow: '0 8px 24px rgba(15,23,42,0.04)' }}>
-          <div>Session id: <strong>{id}</strong></div>
-          <div style={{ marginTop: 8 }}>Participants: {session.users ? session.users.length : 0}</div>
-        </div>
-      </section>
-
-      <section style={{ marginTop: 18 }}>
-        {/* Start the WebRTC room. Make sure you have the component WebRTCRoom implemented */}
-        <WebRTCRoom roomId={id} displayName={''} />
-      </section>
+      <div style={{ marginTop: 18 }}>
+        {joined && <WebRTCRoom sessionId={id} displayName={user?.displayName || user?.email || 'Student'} />}
+      </div>
     </div>
   )
 }
