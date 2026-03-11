@@ -1,15 +1,17 @@
-// pages/session/[id].js
+'use client'
+// app/session/[id]/page.jsx
 import React, { useEffect, useState } from 'react'
-import { useRouter } from 'next/router'
-import { auth, db } from '../../lib/firebase'
+import { useRouter, useParams } from 'next/navigation'
+import { auth, db } from '../../../lib/firebase'
 import { doc, setDoc, serverTimestamp, onSnapshot } from 'firebase/firestore'
 import dynamic from 'next/dynamic'
 
-const WebRTCRoom = dynamic(() => import('../../components/WebRTCRoom'), { ssr: false })
+const WebRTCRoom = dynamic(() => import('../../../components/WebRTCRoom'), { ssr: false })
 
 export default function SessionPage() {
   const router = useRouter()
-  const { id } = router.query
+  const params = useParams()
+  const id = params?.id
   const [user, setUser] = useState(auth.currentUser)
   const [session, setSession] = useState(null)
   const [joined, setJoined] = useState(false)
@@ -54,16 +56,16 @@ export default function SessionPage() {
   }
 
   return (
-    <div style={{ padding: 18 }}>
+    <div style={{padding:18}}>
       <h2>Session: {id}</h2>
       <div>Mode: {session?.mode || '—'}</div>
       <div>Exam/Subject: {session?.exam}/{session?.subject}</div>
-      <div style={{ marginTop: 12 }}>
+      <div style={{marginTop:12}}>
         {!joined ? <button onClick={join}>Join meeting</button> : <button onClick={leave}>Leave</button>}
-        {error && <div style={{ color: 'red', marginTop: 10 }}>{error}</div>}
+        {error && <div style={{color:'red', marginTop:10}}>{error}</div>}
       </div>
 
-      <div style={{ marginTop: 18 }}>
+      <div style={{marginTop:18}}>
         {joined && <WebRTCRoom sessionId={id} displayName={user?.displayName || user?.email || 'Student'} />}
       </div>
     </div>
