@@ -1,72 +1,40 @@
 'use client'
-// app/session/[id]/page.jsx
-import React, { useEffect, useState } from 'react'
-import { useRouter, useParams } from 'next/navigation'
-import { auth, db } from '../../../lib/firebase'
-import { doc, setDoc, serverTimestamp, onSnapshot } from 'firebase/firestore'
-import dynamic from 'next/dynamic'
+import { useRouter } from 'next/navigation'
+import { useEffect, useState } from 'react'
+import Link from 'next/link'
 
-const WebRTCRoom = dynamic(() => import('../../../components/WebRTCRoom'), { ssr: false })
-
-export default function SessionPage() {
-  const router = useRouter()
-  const params = useParams()
-  const id = params?.id
-  const [user, setUser] = useState(auth.currentUser)
-  const [session, setSession] = useState(null)
-  const [joined, setJoined] = useState(false)
-  const [error, setError] = useState(null)
+export default function SessionPage({ params }) {
+  const id = params.id
+  const [status, setStatus] = useState('initializing')
 
   useEffect(() => {
-    const unsub = auth.onAuthStateChanged(u => setUser(u))
-    return () => unsub()
+    // placeholder: later we will connect to Firestore to get real session status
+    setTimeout(()=> setStatus('active'), 800)
   }, [])
 
-  useEffect(() => {
-    if (!id) return
-    const ref = doc(db, 'sessions', id)
-    const unsub = onSnapshot(ref, snap => {
-      if (!snap.exists()) return setSession(null)
-      setSession(snap.data())
-    }, err => setError('Session read error: ' + (err.message||err)))
-    return () => unsub()
-  }, [id])
-
-  async function join() {
-    setError(null)
-    if (!user) { setError('Sign in required on this device'); return }
-    if (!id) { setError('No session id'); return }
-    try {
-      await setDoc(doc(db, 'sessions', id, 'participants', user.uid), {
-        uid: user.uid, displayName: user.displayName || user.email || '', joinedAt: serverTimestamp()
-      })
-      setJoined(true)
-    } catch (e) {
-      setError('Failed to join session: ' + (e.message||e))
-    }
-  }
-
-  async function leave() {
-    try {
-      if (user && id) {
-        await setDoc(doc(db, 'sessions', id, 'participants', user.uid), { leftAt: serverTimestamp() }, { merge: true })
-      }
-    } catch (e) {}
-    router.push('/join')
-  }
-
   return (
-    <div style={{padding:18}}>
-      <h2>Session: {id}</h2>
-      <div>Mode: {session?.mode || '—'}</div>
-      <div>Exam/Subject: {session?.exam}/{session?.subject}</div>
-      <div style={{marginTop:12}}>
-        {!joined ? <button onClick={join}>Join meeting</button> : <button onClick={leave}>Leave</button>}
-        {error && <div style={{color:'red', marginTop:10}}>{error}</div>}
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2>Session — {id}</h2>
+        <div><Link href="/dashboard"><button>Back to dashboard</button></Link></div>
       </div>
 
-      <div style={{marginTop:18}}>
-        {joined && <WebRTCRoom sessionId={id} displayName={user?.displayName || user?.email || 'Student'} />}
+      <p>Mode: one-on-one</p>
+      <p>Session status: <strong style={{color: status === 'active' ? 'green' : '#444'}}>{status}</strong></p>
+
+      <div style={{marginTop:16}}>
+        <div style={{width:'100%',height:420, borderRadius:16, overflow:'hidden', background:'#111', color:'#fff', display:'flex',alignItems:'center',justifyContent:'center'}}>
+          {/* This is a placeholder area for the video embed. We'll replace with actual WebRTC/Jitsi embed after baseline is stable. */}
+          <div style={{textAlign:'center',padding:20}}>
+            <div style={{fontSize:20,fontWeight:700}}>Video placeholder</div>
+            <div style={{marginTop:8,fontSize:13,opacity:0.9}}>Video UI will appear here</div>
+          </div>
+        </div>
+
+        <div style={{marginTop:12}}>
+          <button>Join meeting</button>
+          <button style={{marginLeft:10, background:'#eee', color:'#111'}}>Fullscreen</button>
+        </div>
       </div>
     </div>
   )
