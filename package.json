@@ -1,18 +1,19 @@
 {
-  "name": "focusduo",
-  "private": true,
-  "version": "1.0.0",
-
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
-  },
-
-  "dependencies": {
-    "next": "14.2.5",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "firebase": "^10.12.2"
-  }
+"name": "focusduo",
+"version": "1.0.1",
+"private": true,
+"engines": {
+"node": "20.x"
+},
+"scripts": {
+"dev": "next dev",
+"build": "next build",
+"start": "next start"
+},
+"dependencies": {
+"next": "14.2.5",
+"react": "18.3.1",
+"react-dom": "18.3.1",
+"firebase": "10.12.2"
+}
 }
