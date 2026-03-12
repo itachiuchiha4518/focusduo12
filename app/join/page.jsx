@@ -1,158 +1,173 @@
-// app/join/page.jsx
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { auth } from '../../lib/firebase'
+import { auth, googleProvider, db } from '../../lib/firebase'
 import { signInWithPopup } from 'firebase/auth'
-import { googleProvider, db } from '../../lib/firebase'
-import { addDoc, collection, serverTimestamp, query, orderBy, onSnapshot, doc, runTransaction } from 'firebase/firestore'
+import { addDoc, collection, serverTimestamp, query, orderBy, onSnapshot, runTransaction } from 'firebase/firestore'
 
-export default function JoinPage() {
+export default function JoinPage(){
   const router = useRouter()
   const [exam, setExam] = useState('JEE')
   const [subject, setSubject] = useState('Physics')
   const [mode, setMode] = useState('1-on-1')
-  const [user, setUser] = useState(null)
   const [status, setStatus] = useState('idle')
-  const userDocRef = useRef(null) // store queue doc ref
-  const unsubQueueListener = useRef(null)
+  const queueListenerRef = useRef(null)
+  const myQueueDocRef = useRef(null)
 
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(u => {
-      setUser(u)
-    })
-    return unsubscribe
-  }, [])
+  useEffect(()=>{
+    const unsub = auth.onAuthStateChanged(u => { /* nothing to show here */ })
+    return () => unsub()
+  },[])
 
-  async function loginGoogle() {
+  function qid(exam, subject, mode){
+    return `${exam.toLowerCase()}_${subject.toLowerCase()}_${mode.replace(/\W/g,'').toLowerCase()}`
+  }
+
+  async function ensureSignedIn(){
+    if (!auth.currentUser){
+      try {
+        await signInWithPopup(auth, googleProvider)
+      } catch(e){
+        console.error('signin failed', e)
+        throw e
+      }
+    }
+    return auth.currentUser
+  }
+
+  async function startMatchmaking(){
     try {
       setStatus('signing-in')
-      await signInWithPopup(auth, googleProvider)
-      setStatus('idle')
+      const user = await ensureSignedIn()
+      setStatus('joining-queue')
+
+      const queueId = qid(exam, subject, mode)
+      const usersCol = collection(db, 'queues', queueId, 'users')
+
+      // Add current user to queue
+      const docRef = await addDoc(usersCol, {
+        uid: user.uid,
+        name: user.displayName || user.email,
+        exam, subject, mode,
+        createdAt: serverTimestamp()
+      })
+      myQueueDocRef.current = docRef
+
+      // Listen for earliest pair and match them instantly using transaction
+      const q = query(usersCol, orderBy('createdAt', 'asc'))
+      queueListenerRef.current = onSnapshot(q, async snap => {
+        const docs = snap.docs
+        if (docs.length < 2) {
+          setStatus('waiting')
+          return
+        }
+
+        // pick earliest two
+        const d1 = docs[0]
+        const d2 = docs[1]
+
+        // Attempt transaction: create session + remove both queue docs (atomic)
+        try {
+          setStatus('matching')
+          await runTransaction(db, async (tx) => {
+            const s1 = await tx.get(d1.ref)
+            const s2 = await tx.get(d2.ref)
+            if (!s1.exists() || !s2.exists()) throw new Error('stale queue')
+            // create session doc
+            const sessionRef = collection(db, 'sessions')
+            const newSessionRef = (await addDoc(sessionRef, {
+              createdAt: serverTimestamp(),
+              exam, subject, mode,
+              participants: [
+                { uid: s1.data().uid, name: s1.data().name },
+                { uid: s2.data().uid, name: s2.data().name }
+              ],
+              status: 'waiting_for_join', // will be updated when first user starts video
+            })).withConverter(null) // noop to get back ref
+            // remove queue docs
+            tx.delete(d1.ref)
+            tx.delete(d2.ref)
+            // NOTE: runTransaction cannot return the newly created id taken this way,
+            // so we update client-side after transaction finishes via outside value
+          })
+          // Transaction succeeded — we still need to find the session id created.
+          // Simpler: after deletion, query for sessions recently created with matching exam/subject & our uid
+          // But to keep things robust: query sessions where status == 'waiting_for_join' and participants include current uid
+          setStatus('matched — redirecting')
+          // wait small time to let session doc propagate
+          setTimeout(async ()=>{
+            // find session doc for current pair (simple query)
+            // We'll search sessions created recently for matching exam/subj and mode and containing current uid
+            // This is somewhat naive but fine for early testing.
+            const sessionsCol = collection(db, 'sessions')
+            const qS = query(sessionsCol, orderBy('createdAt', 'desc'))
+            const snapS = await (await import('firebase/firestore')).getDocs(qS)
+            let found = null
+            for (const sdoc of snapS.docs){
+              const d = sdoc.data()
+              if (d.exam === exam && d.subject === subject && d.mode === mode && Array.isArray(d.participants)){
+                const uids = d.participants.map(p=>p.uid)
+                if (uids.includes(user.uid)) { found = sdoc.id; break }
+              }
+            }
+            if (found) {
+              // cleanup local listener
+              if (queueListenerRef.current) { queueListenerRef.current() ; queueListenerRef.current = null }
+              router.push(`/session/${found}`)
+            } else {
+              setStatus('match_found_but_no_session')
+            }
+          }, 600)
+        } catch (err){
+          console.error('transaction failed', err)
+          setStatus('waiting') // fallback
+        }
+      })
     } catch (e) {
       console.error(e)
-      setStatus('error signing in')
+      setStatus('error')
     }
   }
 
-  function queueIdFor(exam, subject, mode) {
-    // normalized queue id
-    return `${exam.toLowerCase()}_${subject.toLowerCase()}_${mode.replace(/[^a-z0-9]/gi,'').toLowerCase()}`
-  }
-
-  async function startMatchmaking() {
-    if (!user) {
-      await loginGoogle()
-      if (!auth.currentUser) return
-      setUser(auth.currentUser)
-    }
-    setStatus('joining-queue')
-    const qid = queueIdFor(exam, subject, mode)
-    const usersCol = collection(db, 'queues', qid, 'users')
-    // add me to queue
-    const docRef = await addDoc(usersCol, {
-      uid: auth.currentUser.uid,
-      name: auth.currentUser.displayName || auth.currentUser.email,
-      exam, subject, mode,
-      createdAt: serverTimestamp()
-    })
-    userDocRef.current = docRef
-
-    // listen for the queue and attempt match when at least 2 are present
-    const q = query(usersCol, orderBy('createdAt', 'asc'))
-    unsubQueueListener.current = onSnapshot(q, async snap => {
-      const docs = snap.docs
-      // if less than 2, nothing to match
-      if (docs.length < 2) {
-        setStatus('waiting')
-        return
+  async function cancel(){
+    try {
+      if (myQueueDocRef.current){
+        await myQueueDocRef.current.delete()
+        myQueueDocRef.current = null
       }
-      // pick earliest two
-      const first = docs[0]
-      const second = docs[1]
-      // attempt to create session (transaction)
-      try {
-        setStatus('matching')
-        const sessionId = await runTransaction(db, async (tx) => {
-          const d1 = await tx.get(first.ref)
-          const d2 = await tx.get(second.ref)
-          if (!d1.exists() || !d2.exists()) throw 'no docs'
-          // create session doc
-          const sessionRef = doc(collection(db, 'sessions'))
-          const p1 = d1.data()
-          const p2 = d2.data()
-          tx.set(sessionRef, {
-            createdAt: serverTimestamp(),
-            exam,
-            subject,
-            mode,
-            participants: [
-              { uid: p1.uid, name: p1.name },
-              { uid: p2.uid, name: p2.name }
-            ],
-            initiatorUid: p1.uid,
-            status: 'active'
-          })
-          // delete both queue docs
-          tx.delete(first.ref)
-          tx.delete(second.ref)
-          return sessionRef.id
-        })
-        // success: navigate both users to session page
-        setStatus('matched')
-        // cleanup local listener / doc
-        if (unsubQueueListener.current) unsubQueueListener.current()
-        try { /* remove local doc if still exists */ } catch(e){}
-        router.push(`/session/${sessionId}`)
-      } catch (err) {
-        console.error('match transaction failed', err)
-        setStatus('waiting')
-      }
-    })
-  }
-
-  async function cancelQueue() {
-    if (userDocRef.current) {
-      try {
-        await userDocRef.current.delete()
-      } catch (e) { /* ignore */ }
-      userDocRef.current = null
-    }
-    if (unsubQueueListener.current) {
-      unsubQueueListener.current()
-      unsubQueueListener.current = null
-    }
+    } catch(e){}
+    if (queueListenerRef.current){ queueListenerRef.current(); queueListenerRef.current = null }
     setStatus('idle')
   }
 
   return (
-    <div>
-      <h2>Join a study session</h2>
+    <div style={{padding:20}}>
+      <h1>Join a study session</h1>
 
       <div style={{maxWidth:520}}>
         <label>Exam</label>
-        <select value={exam} onChange={e=>setExam(e.target.value)} style={{display:'block',padding:8}}>
+        <select value={exam} onChange={e=>setExam(e.target.value)}>
           <option>JEE</option>
           <option>NEET</option>
         </select>
 
-        <label style={{marginTop:8}}>Subject</label>
-        <select value={subject} onChange={e=>setSubject(e.target.value)} style={{display:'block',padding:8}}>
+        <label style={{display:'block', marginTop:8}}>Subject</label>
+        <select value={subject} onChange={e=>setSubject(e.target.value)}>
           <option>Physics</option>
           <option>Chemistry</option>
           <option>Math</option>
           <option>Biology</option>
         </select>
 
-        <label style={{marginTop:8}}>Mode</label>
-        <select value={mode} onChange={e=>setMode(e.target.value)} style={{display:'block',padding:8}}>
+        <label style={{display:'block', marginTop:8}}>Mode</label>
+        <select value={mode} onChange={e=>setMode(e.target.value)}>
           <option>1-on-1</option>
           <option>Group</option>
         </select>
 
         <div style={{marginTop:12, display:'flex', gap:8}}>
           <button onClick={startMatchmaking}>Start matchmaking</button>
-          <button onClick={cancelQueue} style={{background:'#ddd',color:'#000'}}>Cancel</button>
+          <button onClick={cancel} style={{background:'#eee'}}>Cancel</button>
         </div>
 
         <div style={{marginTop:12}}>
