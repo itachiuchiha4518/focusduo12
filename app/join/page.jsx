@@ -1,12 +1,8 @@
 'use client'
 /*
-  app/join/page.jsx
-  Simple, deterministic matchmaking:
-  - queue stored at: queues/{queueId}/users
-  - transaction atomically: create session, create userMatches/{uid}, delete queue docs
-  - clients listen to userMatches/{uid} and redirect to /session/{sessionId}
+ app/join/page.jsx
+ Deterministic matchmaking: transaction creates session + initiatorUid + userMatches
 */
-
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { auth, googleProvider, db } from '../../lib/firebase'
@@ -20,41 +16,36 @@ import {
   onSnapshot,
   doc,
   runTransaction,
-  limit
+  limit as fbLimit
 } from 'firebase/firestore'
 
 export default function JoinPage() {
   const router = useRouter()
   const [exam, setExam] = useState('JEE')
   const [subject, setSubject] = useState('Physics')
-  const [mode, setMode] = useState('1-on-1') // '1-on-1' or 'group'
+  const [mode, setMode] = useState('1-on-1')
   const [status, setStatus] = useState('idle')
-  const [user, setUser] = useState(null)
   const myQueueDocRef = useRef(null)
   const queueUnsubRef = useRef(null)
   const userMatchUnsubRef = useRef(null)
+  const [user, setUser] = useState(null)
 
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(u => setUser(u))
     return () => unsub()
   }, [])
 
-  function queueKey(exam, subject, mode) {
+  function queueKey(exam, subject, mode){
     return `${exam.toLowerCase()}__${subject.toLowerCase()}__${mode.replace(/\W/g,'').toLowerCase()}`
   }
 
-  async function ensureSignedIn() {
+  async function ensureSignedIn(){
     if (auth.currentUser) return auth.currentUser
-    try {
-      const res = await signInWithPopup(auth, googleProvider)
-      return res.user
-    } catch (e) {
-      console.error('Google sign-in failed', e)
-      throw e
-    }
+    const res = await signInWithPopup(auth, googleProvider)
+    return res.user
   }
 
-  async function startMatchmaking() {
+  async function startMatchmaking(){
     setStatus('starting')
     try {
       const me = await ensureSignedIn()
@@ -63,22 +54,20 @@ export default function JoinPage() {
 
       const qk = queueKey(exam, subject, mode)
       const usersCol = collection(db, 'queues', qk, 'users')
-
-      // Add this user to queue (we keep uid for server-side matching but UI shows only names)
-      const myDocRef = await addDoc(usersCol, {
+      const qRef = await addDoc(usersCol, {
         uid: me.uid,
         name: me.displayName || me.email || 'Student',
         createdAt: serverTimestamp()
       })
-      myQueueDocRef.current = myDocRef
+      myQueueDocRef.current = qRef
 
-      // Subscribe to userMatches/myUid -> redirect when we get a sessionId
-      const myMatchDoc = doc(db, 'userMatches', me.uid)
-      userMatchUnsubRef.current = onSnapshot(myMatchDoc, snap => {
+      // listen for our userMatches doc for redirect
+      const myMatchRef = doc(db, 'userMatches', me.uid)
+      userMatchUnsubRef.current = onSnapshot(myMatchRef, snap => {
         if (!snap.exists()) return
         const data = snap.data()
-        if (data?.sessionId) {
-          // matched — cleanup and redirect
+        if (data && data.sessionId) {
+          // cleanup listeners and redirect
           cleanupListeners()
           router.push(`/session/${data.sessionId}`)
         }
@@ -86,45 +75,36 @@ export default function JoinPage() {
 
       setStatus('waiting')
 
-      // Listen to this queue and attempt to match as soon as there are enough users.
+      // watch queue and attempt match when possible
       const q = query(usersCol, orderBy('createdAt', 'asc'))
       queueUnsubRef.current = onSnapshot(q, async snap => {
         const docs = snap.docs
-        const minRequired = mode === 'group' ? 2 : 2 // group requires at least 2 as well (you can change)
+        // For 1-on-1 we match first two, for group use up to 5
         const maxGroupSize = mode === 'group' ? 5 : 2
+        if (docs.length < 2) { setStatus('waiting'); return }
 
-        if (docs.length < minRequired) {
-          // not enough people yet
-          setStatus('waiting')
-          return
-        }
-
-        // If there are enough, pick earliest up to maxGroupSize
         const candidates = docs.slice(0, maxGroupSize)
 
-        // We'll run a transaction that:
-        // 1) re-reads selected queue docs to ensure existence
-        // 2) creates a new session doc with participants (names only for display)
-        // 3) writes userMatches/{uid} for each participant with sessionId
-        // 4) deletes the queue docs
+        // run transaction: ensure docs exist, create session with initiatorUid = earliest uid,
+        // set userMatches/{uid} for each participant, delete queue docs
         try {
           setStatus('matching')
-          const sessionId = await runTransaction(db, async (tx) => {
-            // Re-check each selected doc under transaction
-            const snapshotDocs = []
-            for (const cand of candidates) {
-              const qd = await tx.get(cand.ref)
-              if (!qd.exists()) {
-                // stale; abort
-                throw new Error('stale-queue')
-              }
-              snapshotDocs.push({ id: cand.id, ref: cand.ref, data: qd.data() })
+          const newSessionId = await runTransaction(db, async (tx) => {
+            // re-read docs
+            const snapDocs = []
+            for (const c of candidates){
+              const sd = await tx.get(c.ref)
+              if (!sd.exists()) throw new Error('stale')
+              snapDocs.push({ id: c.id, ref: c.ref, data: sd.data() })
             }
 
-            // create session document with deterministic ref so we can return id
+            // deterministically order by createdAt (should already be)
+            const participants = snapDocs.map(s => ({ uid: s.data.uid, name: s.data.name }))
+
+            // create session doc ref
             const sessionsCol = collection(db, 'sessions')
-            const newSessionRef = doc(sessionsCol) // gives us ref with id
-            const participants = snapshotDocs.map(s => ({ uid: s.data.uid, name: s.data.name }))
+            const newSessionRef = doc(sessionsCol) // create new ref with ID
+            const initiatorUid = participants[0].uid
 
             tx.set(newSessionRef, {
               createdAt: serverTimestamp(),
@@ -132,29 +112,26 @@ export default function JoinPage() {
               subject,
               mode,
               participants,
+              initiatorUid,
               status: 'waiting_for_join'
             })
 
-            // write userMatches for each participant to notify them
-            for (const p of participants) {
+            // write userMatches/uid for each participant so clients get notified
+            for (const p of participants){
               const umRef = doc(db, 'userMatches', p.uid)
               tx.set(umRef, { sessionId: newSessionRef.id, createdAt: serverTimestamp() })
             }
 
-            // delete queue docs for those participants
-            for (const s of snapshotDocs) {
-              tx.delete(s.ref)
-            }
+            // delete queue docs
+            for (const s of snapDocs) tx.delete(s.ref)
 
             return newSessionRef.id
           })
 
-          // transaction succeeded; sessionId returned. Both users will be notified via their userMatches listener.
+          // transaction succeeded. userMatches listeners will redirect both users.
           setStatus('matched')
-          // we don't navigate here — userMatches snapshot will trigger redirect.
         } catch (err) {
-          // transaction failed (race or stale docs). Just stay waiting and let the next snapshot attempt again.
-          console.warn('match transaction failed or race condition', err)
+          console.warn('transaction failed', err)
           setStatus('waiting')
         }
       })
@@ -164,28 +141,28 @@ export default function JoinPage() {
     }
   }
 
-  async function cancelMatchmaking() {
+  async function cancelMatchmaking(){
     setStatus('cancelling')
     try {
-      // remove our queue doc if it still exists
       if (myQueueDocRef.current) {
-        try { await myQueueDocRef.current.delete() } catch (e) { /* ignore */ }
+        try { await myQueueDocRef.current.delete() } catch(e){}
         myQueueDocRef.current = null
       }
-    } catch (e) {}
-    cleanupListeners()
-    setStatus('idle')
+      cleanupListeners()
+      setStatus('idle')
+    } catch (e) {
+      setStatus('idle')
+    }
   }
 
-  function cleanupListeners() {
+  function cleanupListeners(){
     try { if (queueUnsubRef.current) { queueUnsubRef.current(); queueUnsubRef.current = null } } catch(e){}
     try { if (userMatchUnsubRef.current) { userMatchUnsubRef.current(); userMatchUnsubRef.current = null } } catch(e){}
   }
 
   return (
-    <div style={{padding:20, maxWidth:640}}>
-      <h1>Join a study session</h1>
-
+    <div style={{padding:20, maxWidth:720}}>
+      <h2>Join a study session</h2>
       <div style={{marginTop:12}}>
         <label>Exam</label>
         <select value={exam} onChange={e=>setExam(e.target.value)}>
@@ -212,18 +189,16 @@ export default function JoinPage() {
         </select>
       </div>
 
-      <div style={{marginTop:14, display:'flex', gap:8}}>
+      <div style={{marginTop:12, display:'flex', gap:8}}>
         <button onClick={startMatchmaking}>Start matchmaking</button>
         <button onClick={cancelMatchmaking} style={{background:'#eee', color:'#000'}}>Cancel</button>
       </div>
 
       <div style={{marginTop:12}}>
-        <strong>Status:</strong> {status}
+        <strong>Status</strong>: {status}
       </div>
 
-      <div style={{marginTop:10, color:'#666'}}>
-        Note: matchmaking is immediate and deterministic — earliest users in the queue are matched.
-      </div>
+      <div style={{marginTop:10, color:'#666'}}>Note: matchmaking is immediate and deterministic — earliest users are matched and removed from the queue atomically.</div>
     </div>
   )
 }
