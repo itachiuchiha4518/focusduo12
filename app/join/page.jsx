@@ -1,20 +1,41 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 
-import { auth, googleProvider, db } from '../../lib/firebase' // keep your existing lib/firebase
+import { auth, googleProvider, db } from '../../lib/firebase'
 import { signInWithPopup } from 'firebase/auth'
+
 import {
   collection,
   addDoc,
   getDocs,
   deleteDoc,
   doc,
-  serverTimestamp
+  serverTimestamp,
+  runTransaction,
+  query,
+  where,
+  onSnapshot
 } from 'firebase/firestore'
 
-export default function JoinPage() {
+/**
+ * Robust matchmaking page:
+ * - per-queue collections (queue_JEE_Physics_one-on-one)
+ * - atomic transaction to remove partner and create session
+ * - listener on sessions to redirect waiting user when matched
+ * - automatic cleanup of user's queue doc on cancel/unload
+ */
+
+function cleanName(v){
+  return String(v).replace(/[^a-zA-Z0-9_-]/g, '_')
+}
+
+function queueCollectionName(exam, subject, mode){
+  return `queue_${cleanName(exam)}_${cleanName(subject)}_${cleanName(mode)}`
+}
+
+export default function JoinPage(){
   const router = useRouter()
 
   const [exam, setExam] = useState('JEE')
@@ -23,119 +44,185 @@ export default function JoinPage() {
 
   const [status, setStatus] = useState('idle') // idle | signing-in | searching | waiting | error
   const [queueDocId, setQueueDocId] = useState(null)
+  const waitingRef = useRef(null) // holds unsubscribe for session listener
 
-  // Ensure user is signed in (Google). Returns user object.
-  async function ensureLogin() {
-    if (auth.currentUser) return auth.currentUser
+  const userRef = useRef(null)
+
+  // ensure user is logged in
+  async function ensureLogin(){
+    if(auth.currentUser){
+      userRef.current = auth.currentUser
+      return auth.currentUser
+    }
     const res = await signInWithPopup(auth, googleProvider)
+    userRef.current = res.user
     return res.user
   }
 
-  // Build unique collection name to avoid composite index requirement
-  function queueCollectionName(examVal, subjectVal, modeVal) {
-    // sanitize values to safe collection name
-    const clean = v => String(v).replace(/[^a-zA-Z0-9_-]/g, '_')
-    return `queue_${clean(examVal)}_${clean(subjectVal)}_${clean(modeVal)}`
+  // Listen for sessions that include this user's UID (participantUids)
+  function listenForSession(uid){
+    // cleanup old listener
+    if(waitingRef.current) {
+      waitingRef.current()
+      waitingRef.current = null
+    }
+
+    const q = query(collection(db,'sessions'), where('participantUids','array-contains', uid))
+    const unsub = onSnapshot(q, snap => {
+      for(const d of snap.docs){
+        const data = d.data()
+        if(data && data.status === 'active'){
+          // redirect to session page
+          waitingRef.current && waitingRef.current()
+          waitingRef.current = null
+          router.push(`/session/${d.id}`)
+          return
+        }
+      }
+    })
+
+    waitingRef.current = unsub
   }
 
-  async function startMatchmaking() {
+  // Main matchmaking: try to match someone already waiting (atomic) else add self to queue
+  async function startMatchmaking(){
     setStatus('signing-in')
+
     let user
-    try {
+    try{
       user = await ensureLogin()
-    } catch (err) {
-      console.error('Google sign-in failed', err)
+    }catch(err){
+      console.error('sign-in failed', err)
       setStatus('error')
-      alert('Sign-in failed.')
+      alert('Sign-in failed')
       return
     }
 
     setStatus('searching')
 
-    try {
-      const colName = queueCollectionName(exam, subject, mode)
-      const queueRef = collection(db, colName)
+    const uid = user.uid
+    const displayName = user.displayName || user.email || 'Anonymous'
 
-      // Read entire queue collection for this exam/subject/mode
+    // Listen for session creation for this user so if someone matches you get redirected
+    listenForSession(uid)
+
+    const colName = queueCollectionName(exam, subject, mode)
+    const queueRef = collection(db, colName)
+
+    try{
+      // read snapshot (no composite index needed because per-queue collection)
       const snap = await getDocs(queueRef)
 
-      // If someone waiting, pick the first doc as partner
-      if (snap.docs.length > 0) {
-        const partnerDoc = snap.docs[0]
-        const partner = partnerDoc.data()
+      // find first partner whose uid != current user
+      const partnerDoc = snap.docs.find(d => {
+        const data = d.data()
+        return data && data.uid && data.uid !== uid
+      })
 
-        // Create session document with both participants
-        const sessionRef = await addDoc(collection(db, 'sessions'), {
-          exam,
-          subject,
-          mode,
-          createdAt: serverTimestamp(),
-          participants: [
-            { uid: user.uid, name: user.displayName || user.email || 'Anonymous' },
-            { uid: partner.uid, name: partner.name || partner.displayName || 'Partner' }
-          ],
-          status: 'active'
+      if(partnerDoc){
+        // Attempt atomic transaction: verify partner still exists, delete partner doc, create session
+        const partnerRef = doc(db, colName, partnerDoc.id)
+        const sessionRef = doc(collection(db,'sessions')) // create ref with id now
+
+        await runTransaction(db, async (tx) => {
+          const partnerSnapshot = await tx.get(partnerRef)
+          if(!partnerSnapshot.exists()){
+            throw new Error('partner-vanished')
+          }
+          const partnerData = partnerSnapshot.data()
+
+          // create session object
+          const sessionObj = {
+            exam,
+            subject,
+            mode,
+            createdAt: serverTimestamp(),
+            participants: [
+              { uid, name: displayName },
+              { uid: partnerData.uid, name: partnerData.name || 'Partner' }
+            ],
+            participantUids: [uid, partnerData.uid],
+            status: 'active'
+          }
+
+          // delete partner queue doc and create session atomically
+          tx.delete(partnerRef)
+          tx.set(sessionRef, sessionObj)
         })
 
-        // Remove partner from queue immediately (prevent duplicates)
-        await deleteDoc(doc(db, colName, partnerDoc.id))
-
-        // Redirect to session page
+        // transaction committed successfully — redirect to session
         router.push(`/session/${sessionRef.id}`)
         return
       }
 
-      // No partner — add current user to queue collection for this exam/subject/mode
-      const myQueueDoc = await addDoc(queueRef, {
-        uid: user.uid,
-        name: user.displayName || user.email || 'Anonymous',
+      // No partner found — add ourselves to queue
+      const myDoc = await addDoc(queueRef, {
+        uid,
+        name: displayName,
         exam,
         subject,
         mode,
         createdAt: serverTimestamp()
       })
 
-      setQueueDocId(myQueueDoc.id)
+      setQueueDocId(myDoc.id)
       setStatus('waiting')
-      // stay on page — user waits
 
-    } catch (err) {
-      console.error('Matchmaking error', err)
+      // IMPORTANT: other users will match by deleting this doc transactionally;
+      // our session listener (listenForSession) will redirect us when session is created.
+
+    }catch(err){
+      console.error('matchmaking error', err)
       setStatus('error')
-      alert('Failed to join queue. Check console.')
+      alert('Matchmaking failed. Check console.')
     }
   }
 
-  // Cancel and remove current user from queue (if in queue)
-  async function cancelQueue() {
-    if (!queueDocId) {
+  // Cancel queue (remove our queue doc if present)
+  async function cancelQueue(){
+    if(!queueDocId) {
       setStatus('idle')
       return
     }
-    try {
+    try{
       const colName = queueCollectionName(exam, subject, mode)
       await deleteDoc(doc(db, colName, queueDocId))
-    } catch (err) {
-      console.error('Cancel queue failed', err)
-    } finally {
+    }catch(err){
+      console.warn('cancel failed', err)
+    }finally{
       setQueueDocId(null)
       setStatus('idle')
+      if(waitingRef.current){
+        waitingRef.current()
+        waitingRef.current = null
+      }
     }
   }
 
-  // Cleanup when leaving the page or switching queues
+  // Cleanup on unmount or when user navigates away
   useEffect(() => {
-    return () => {
-      if (queueDocId) {
+    const onUnload = () => {
+      if(queueDocId){
         const colName = queueCollectionName(exam, subject, mode)
-        deleteDoc(doc(db, colName, queueDocId)).catch(e => {
-          // ignore cleanup errors
-          console.warn('cleanup queue failed:', e)
-        })
+        // best-effort synchronous cleanup (cannot await reliably)
+        deleteDoc(doc(db, colName, queueDocId)).catch(()=>{})
+      }
+    }
+    window.addEventListener('beforeunload', onUnload)
+
+    return () => {
+      window.removeEventListener('beforeunload', onUnload)
+      if(queueDocId){
+        const colName = queueCollectionName(exam, subject, mode)
+        deleteDoc(doc(db, colName, queueDocId)).catch(()=>{})
+      }
+      if(waitingRef.current){
+        waitingRef.current()
+        waitingRef.current = null
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queueDocId]) // run cleanup on unmount or when queueDocId changes
+  }, [queueDocId, exam, subject, mode])
 
   return (
     <div style={{ maxWidth: 860, margin: '32px auto', padding: 20 }}>
@@ -147,11 +234,7 @@ export default function JoinPage() {
       <div style={{ display: 'grid', gap: 12, maxWidth: 480 }}>
         <label>
           <div style={{ fontWeight: 600 }}>Exam</div>
-          <select
-            value={exam}
-            onChange={e => setExam(e.target.value)}
-            style={{ padding: 8, width: '100%', marginTop: 6 }}
-          >
+          <select value={exam} onChange={e => setExam(e.target.value)} style={{ padding: 8, width: '100%', marginTop: 6 }}>
             <option>JEE</option>
             <option>NEET</option>
           </select>
@@ -159,11 +242,7 @@ export default function JoinPage() {
 
         <label>
           <div style={{ fontWeight: 600 }}>Subject</div>
-          <select
-            value={subject}
-            onChange={e => setSubject(e.target.value)}
-            style={{ padding: 8, width: '100%', marginTop: 6 }}
-          >
+          <select value={subject} onChange={e => setSubject(e.target.value)} style={{ padding: 8, width: '100%', marginTop: 6 }}>
             <option>Physics</option>
             <option>Chemistry</option>
             <option>Math</option>
@@ -173,11 +252,7 @@ export default function JoinPage() {
 
         <label>
           <div style={{ fontWeight: 600 }}>Mode</div>
-          <select
-            value={mode}
-            onChange={e => setMode(e.target.value)}
-            style={{ padding: 8, width: '100%', marginTop: 6 }}
-          >
+          <select value={mode} onChange={e => setMode(e.target.value)} style={{ padding: 8, width: '100%', marginTop: 6 }}>
             <option value="one-on-one">1-on-1</option>
             <option value="group">Group (max 5)</option>
           </select>
