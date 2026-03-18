@@ -1,22 +1,34 @@
+'use client'
+
 import { useEffect, useRef, useState } from 'react'
 import { addDoc, collection, onSnapshot, orderBy, query, serverTimestamp } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 
-const BAD_WORDS = [
-  'asshole', 'bastard', 'bitch', 'bullshit', 'crap', 'dick', 'douche', 'fuck',
-  'fucker', 'fucking', 'fuk', 'shit', 'shitty', 'slut', 'whore',
-  'bc', 'mc', 'chod', 'chodu', 'chutiya', 'madarchod', 'bhenchod', 'gandu',
-  'gaand', 'lund', 'randi', 'saala', 'sala', 'harami'
+const BAD_WORDS_EN = [
+  'asshole', 'bastard', 'bitch', 'bullshit', 'crap', 'damn', 'dick', 'douche',
+  'fuck', 'fucker', 'fucking', 'shit', 'shitty', 'slut', 'whore'
 ]
 
-function censor(text) {
+const BAD_WORDS_HI = [
+  'bc', 'mc', 'chod', 'chodu', 'chutiya', 'chutia', 'madarchod', 'bhenchod',
+  'gandu', 'gaand', 'lund', 'randi', 'harami', 'saala', 'sala'
+]
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function censorText(text) {
   if (!text) return text
-  let out = text
-  for (const w of BAD_WORDS) {
-    const re = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')
-    out = out.replace(re, m => '*'.repeat(m.length))
+  let output = text
+
+  const allWords = [...BAD_WORDS_EN, ...BAD_WORDS_HI]
+  for (const word of allWords) {
+    const re = new RegExp(`\\b${escapeRegExp(word)}\\b`, 'gi')
+    output = output.replace(re, matched => '*'.repeat(matched.length))
   }
-  return out
+
+  return output
 }
 
 export default function Chat({ sessionId }) {
@@ -27,31 +39,39 @@ export default function Chat({ sessionId }) {
 
   useEffect(() => {
     if (!sessionId) return
-    const q = query(collection(db, 'sessions', sessionId, 'messages'), orderBy('createdAt', 'asc'))
+
+    const msgsRef = collection(db, 'sessions', sessionId, 'messages')
+    const q = query(msgsRef, orderBy('createdAt', 'asc'))
+
     const unsub = onSnapshot(q, snap => {
-      setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      setMessages(arr)
+
       setTimeout(() => {
         if (listRef.current) {
           listRef.current.scrollTop = listRef.current.scrollHeight
         }
       }, 40)
     })
+
     return () => unsub()
   }, [sessionId])
 
-  async function send(e) {
+  async function sendMessage(e) {
     e?.preventDefault()
-    if (!text.trim() || !auth.currentUser) return
+    if (!auth.currentUser || !text.trim()) return
 
     setSending(true)
     try {
-      const filtered = censor(text.trim())
+      const filtered = censorText(text.trim())
+
       await addDoc(collection(db, 'sessions', sessionId, 'messages'), {
         senderUid: auth.currentUser.uid,
         senderName: auth.currentUser.displayName || auth.currentUser.email || 'Anonymous',
         textFiltered: filtered,
         createdAt: serverTimestamp()
       })
+
       setText('')
     } catch (err) {
       console.error(err)
@@ -62,32 +82,85 @@ export default function Chat({ sessionId }) {
   }
 
   return (
-    <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 12, background: '#fff' }}>
-      <div style={{ fontWeight: 800, marginBottom: 10 }}>Chat</div>
+    <div
+      style={{
+        borderRadius: 14,
+        border: '1px solid rgba(148,163,184,0.28)',
+        background: 'linear-gradient(180deg, rgba(15,23,42,0.96), rgba(17,24,39,0.96))',
+        color: '#e5e7eb',
+        padding: 14
+      }}
+    >
+      <div style={{ fontWeight: 800, marginBottom: 10, color: '#f8fafc' }}>Chat</div>
 
-      <div ref={listRef} style={{ maxHeight: 260, overflowY: 'auto', background: '#fafafa', borderRadius: 8, padding: 10 }}>
-        {messages.length === 0 && <div style={{ color: '#666' }}>No messages yet.</div>}
-        {messages.map(m => (
-          <div key={m.id} style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>{m.senderName}</div>
-            <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 8, marginTop: 4 }}>
-              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.textFiltered}</div>
+      <div
+        ref={listRef}
+        style={{
+          maxHeight: 280,
+          overflowY: 'auto',
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid rgba(148,163,184,0.14)',
+          borderRadius: 12,
+          padding: 10
+        }}
+      >
+        {messages.length === 0 && (
+          <div style={{ color: '#94a3b8' }}>No messages yet.</div>
+        )}
+
+        {messages.map(m => {
+          const mine = auth.currentUser?.uid && m.senderUid === auth.currentUser.uid
+          return (
+            <div key={m.id} style={{ marginBottom: 10, display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
+              <div
+                style={{
+                  maxWidth: '86%',
+                  borderRadius: 14,
+                  padding: 10,
+                  background: mine ? 'rgba(59,130,246,0.22)' : 'rgba(255,255,255,0.07)',
+                  border: mine ? '1px solid rgba(59,130,246,0.35)' : '1px solid rgba(148,163,184,0.14)',
+                  color: '#f8fafc'
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 700, color: mine ? '#bfdbfe' : '#cbd5e1' }}>
+                  {m.senderName}
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 4, lineHeight: 1.5 }}>
+                  {m.textFiltered}
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
-      <form onSubmit={send} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+      <form onSubmit={sendMessage} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
         <input
           value={text}
           onChange={e => setText(e.target.value)}
           placeholder="Type a message"
-          style={{ flex: 1, padding: 10, borderRadius: 8, border: '1px solid #ddd' }}
+          style={{
+            flex: 1,
+            padding: 12,
+            borderRadius: 10,
+            border: '1px solid rgba(148,163,184,0.22)',
+            background: 'rgba(255,255,255,0.05)',
+            color: '#f8fafc',
+            outline: 'none'
+          }}
         />
         <button
           type="submit"
           disabled={sending}
-          style={{ padding: '10px 14px', borderRadius: 8, background: '#2563eb', color: '#fff', border: 'none' }}
+          style={{
+            padding: '12px 16px',
+            borderRadius: 10,
+            background: '#2563eb',
+            color: '#fff',
+            border: 'none',
+            fontWeight: 700,
+            cursor: 'pointer'
+          }}
         >
           Send
         </button>
