@@ -1,42 +1,25 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp } from 'firebase/firestore'
-import { auth, db } from '../lib/firebase' // adjust path if needed
+import { useEffect, useRef, useState } from 'react'
+import { addDoc, collection, onSnapshot, orderBy, query, serverTimestamp } from 'firebase/firestore'
+import { auth, db } from '../lib/firebase'
 
-// --- PROFANITY FILTER ---
-// This is a starter list. Add words you want to block to the arrays.
-// Words are replaced with asterisks. This runs client-side (pre-send).
-const ENGLISH_BAD = [
-  'asshole','bastard','bitch','bollocks','crap','damn','darn','dick','douche',
-  'fuck','fucking','fucker','shit','shitty','slut','whore'
-]
-const HINDI_BAD = [
-  'bhosdi', 'chod', 'chodu', 'bhenchod', 'madarchod', 'randi', 'randiwal', 'gandu'
+const BAD_WORDS = [
+  'asshole', 'bastard', 'bitch', 'bullshit', 'crap', 'dick', 'douche', 'fuck',
+  'fucker', 'fucking', 'fuk', 'shit', 'shitty', 'slut', 'whore',
+  'bc', 'mc', 'chod', 'chodu', 'chutiya', 'madarchod', 'bhenchod', 'gandu',
+  'gaand', 'lund', 'randi', 'saala', 'sala', 'harami'
 ]
 
-// escape for regex
-function esc(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
-
-function buildFilterRegex(words){
-  if(!words || !words.length) return null
-  const pattern = words.map(w => `(?:${esc(w)})`).join('|')
-  // word boundary-ish: include unicode boundary via lookarounds
-  return new RegExp(`\\b(${pattern})\\b`, 'gi')
-}
-
-const EN_REGEX = buildFilterRegex(ENGLISH_BAD)
-const HI_REGEX = buildFilterRegex(HINDI_BAD)
-
-// censor function: replaces found words with same-length asterisks
-function censorText(text){
-  if(!text) return text
+function censor(text) {
+  if (!text) return text
   let out = text
-  if(EN_REGEX) out = out.replace(EN_REGEX, m => '*'.repeat(m.length))
-  if(HI_REGEX) out = out.replace(HI_REGEX, m => '*'.repeat(m.length))
+  for (const w of BAD_WORDS) {
+    const re = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')
+    out = out.replace(re, m => '*'.repeat(m.length))
+  }
   return out
 }
 
-// Chat component (full file)
-export default function Chat({ sessionId, sessionOwnerUid }) {
+export default function Chat({ sessionId }) {
   const [messages, setMessages] = useState([])
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
@@ -44,36 +27,34 @@ export default function Chat({ sessionId, sessionOwnerUid }) {
 
   useEffect(() => {
     if (!sessionId) return
-    const msgsRef = collection(db, 'sessions', sessionId, 'messages')
-    const q = query(msgsRef, orderBy('createdAt', 'asc'))
+    const q = query(collection(db, 'sessions', sessionId, 'messages'), orderBy('createdAt', 'asc'))
     const unsub = onSnapshot(q, snap => {
-      const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      setMessages(arr)
-      // scroll to bottom
-      setTimeout(()=> listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' }), 50)
+      setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      setTimeout(() => {
+        if (listRef.current) {
+          listRef.current.scrollTop = listRef.current.scrollHeight
+        }
+      }, 40)
     })
     return () => unsub()
   }, [sessionId])
 
-  async function handleSend(e) {
+  async function send(e) {
     e?.preventDefault()
-    if (!text?.trim() || !sessionId || !auth.currentUser) return
-    const cur = auth.currentUser
-    const raw = text.trim()
-    const filtered = censorText(raw)
+    if (!text.trim() || !auth.currentUser) return
 
     setSending(true)
     try {
+      const filtered = censor(text.trim())
       await addDoc(collection(db, 'sessions', sessionId, 'messages'), {
-        senderUid: cur.uid,
-        senderName: cur.displayName || cur.email || 'Anonymous',
+        senderUid: auth.currentUser.uid,
+        senderName: auth.currentUser.displayName || auth.currentUser.email || 'Anonymous',
         textFiltered: filtered,
-        // do NOT store original raw text (we're censoring proactively).
         createdAt: serverTimestamp()
       })
       setText('')
     } catch (err) {
-      console.error('send message failed', err)
+      console.error(err)
       alert('Failed to send message')
     } finally {
       setSending(false)
@@ -81,30 +62,33 @@ export default function Chat({ sessionId, sessionOwnerUid }) {
   }
 
   return (
-    <div style={{ borderRadius: 12, border: '1px solid #e6e6e6', padding: 12, maxWidth: 760 }}>
-      <div style={{ marginBottom: 8, fontWeight: 700 }}>Session chat</div>
+    <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 12, background: '#fff' }}>
+      <div style={{ fontWeight: 800, marginBottom: 10 }}>Chat</div>
 
-      <div ref={listRef} style={{ maxHeight: 260, overflowY: 'auto', padding: 6, background: '#fafafa', borderRadius: 8 }}>
-        {messages.length === 0 && <div style={{ color: '#666' }}>No messages yet — be the first to say hi.</div>}
+      <div ref={listRef} style={{ maxHeight: 260, overflowY: 'auto', background: '#fafafa', borderRadius: 8, padding: 10 }}>
+        {messages.length === 0 && <div style={{ color: '#666' }}>No messages yet.</div>}
         {messages.map(m => (
-          <div key={m.id} style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 13, color: '#333', fontWeight: 700 }}>{m.senderName}</div>
-            <div style={{ background: '#fff', padding: 8, borderRadius: 6, marginTop: 4 }}>
+          <div key={m.id} style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>{m.senderName}</div>
+            <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 8, marginTop: 4 }}>
               <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.textFiltered}</div>
-              <div style={{ fontSize: 11, color: '#999', marginTop: 6 }}>{m.createdAt?.toDate ? m.createdAt.toDate().toLocaleTimeString() : ''}</div>
             </div>
           </div>
         ))}
       </div>
 
-      <form onSubmit={handleSend} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+      <form onSubmit={send} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
         <input
           value={text}
-          onChange={e=> setText(e.target.value)}
-          placeholder="Type a message (no abusive words)."
+          onChange={e => setText(e.target.value)}
+          placeholder="Type a message"
           style={{ flex: 1, padding: 10, borderRadius: 8, border: '1px solid #ddd' }}
         />
-        <button type="submit" disabled={sending} style={{ padding: '10px 14px', borderRadius: 8, background: '#2563eb', color:'#fff', border: 'none' }}>
+        <button
+          type="submit"
+          disabled={sending}
+          style={{ padding: '10px 14px', borderRadius: 8, background: '#2563eb', color: '#fff', border: 'none' }}
+        >
           Send
         </button>
       </form>
