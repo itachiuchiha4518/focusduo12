@@ -1,32 +1,41 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { doc, getDoc, updateDoc, collection, addDoc, onSnapshot, serverTimestamp } from 'firebase/firestore'
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  serverTimestamp,
+  setDoc
+} from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import Chat from './Chat'
-import EndCard from './EndCard'
-import { useRouter } from 'next/navigation'
 
 export default function WebRTCRoom({ sessionId, session: sessionProp }) {
-  const router = useRouter()
-  const localRef = useRef(null)
-  const remoteRef = useRef(null)
+  const localVideoRef = useRef(null)
+  const remoteVideoRef = useRef(null)
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
+  const remoteStreamRef = useRef(null)
+
   const offerUnsubRef = useRef(null)
   const answerUnsubRef = useRef(null)
   const candidatesUnsubRef = useRef(null)
+
   const [session, setSession] = useState(sessionProp || null)
   const [status, setStatus] = useState('idle')
   const [joined, setJoined] = useState(false)
   const [micOn, setMicOn] = useState(true)
   const [camOn, setCamOn] = useState(true)
-  const [ended, setEnded] = useState(false)
+  const [cameraFacing, setCameraFacing] = useState('user')
+  const [sessionEnded, setSessionEnded] = useState(false)
 
   const partner = useMemo(() => {
-    const self = auth.currentUser?.uid
+    const selfUid = auth.currentUser?.uid
     const parts = session?.participants || []
-    return parts.find(p => p.uid !== self) || null
+    return parts.find(p => p.uid !== selfUid) || null
   }, [session])
 
   useEffect(() => {
@@ -37,24 +46,37 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       if (!mounted) return
       if (snap.exists()) {
         setSession({ id: snap.id, ...snap.data() })
+        if (snap.data()?.status === 'finished') {
+          setSessionEnded(true)
+        }
       }
     }
 
     if (!session) loadSession()
 
+    const unsub = onSnapshot(doc(db, 'sessions', sessionId), snap => {
+      if (!snap.exists()) return
+      const data = { id: snap.id, ...snap.data() }
+      setSession(data)
+      setSessionEnded(data.status === 'finished')
+    })
+
     return () => {
       mounted = false
+      unsub()
       cleanup()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
   async function cleanup() {
-    try {
-      offerUnsubRef.current?.()
-      answerUnsubRef.current?.()
-      candidatesUnsubRef.current?.()
-    } catch {}
+    try { offerUnsubRef.current?.() } catch {}
+    try { answerUnsubRef.current?.() } catch {}
+    try { candidatesUnsubRef.current?.() } catch {}
+
+    offerUnsubRef.current = null
+    answerUnsubRef.current = null
+    candidatesUnsubRef.current = null
 
     try {
       if (pcRef.current) {
@@ -69,6 +91,15 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
         localStreamRef.current = null
       }
     } catch {}
+
+    try {
+      if (remoteStreamRef.current) {
+        remoteStreamRef.current.getTracks().forEach(t => t.stop())
+        remoteStreamRef.current = null
+      }
+    } catch {}
+
+    setJoined(false)
   }
 
   async function publishCandidate(candidate) {
@@ -79,105 +110,165 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     })
   }
 
-  async function startCall() {
-    if (!auth.currentUser) return alert('Sign in first')
-
-    setStatus('getting-media')
+  async function createLocalStream(facingMode = 'user') {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
-      video: true
+      video: {
+        facingMode: { ideal: facingMode }
+      }
     })
+    return stream
+  }
 
-    localStreamRef.current = stream
-    if (localRef.current) {
-      localRef.current.srcObject = stream
-      localRef.current.muted = true
-      await localRef.current.play().catch(() => {})
+  async function attachLocalPreview(stream) {
+    if (!localVideoRef.current) return
+    localVideoRef.current.srcObject = stream
+    localVideoRef.current.muted = true
+    await localVideoRef.current.play().catch(() => {})
+  }
+
+  async function replaceCameraTrack(newVideoTrack) {
+    const pc = pcRef.current
+    if (!pc || !newVideoTrack) return
+
+    const videoSender = pc.getSenders().find(s => s.track && s.track.kind === 'video')
+    if (videoSender) {
+      await videoSender.replaceTrack(newVideoTrack)
     }
 
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    })
-    pcRef.current = pc
+    const oldVideoTracks = localStreamRef.current?.getVideoTracks?.() || []
+    oldVideoTracks.forEach(t => t.stop())
+    localStreamRef.current?.removeTrack?.(oldVideoTracks[0])
 
-    const remoteStream = new MediaStream()
-    if (remoteRef.current) remoteRef.current.srcObject = remoteStream
+    localStreamRef.current?.addTrack?.(newVideoTrack)
 
-    pc.ontrack = event => {
-      event.streams[0]?.getTracks().forEach(track => remoteStream.addTrack(track))
-      setTimeout(() => {
-        remoteRef.current?.play().catch(() => {})
-      }, 50)
+    const currentAudioTracks = localStreamRef.current?.getAudioTracks?.() || []
+    const composed = new MediaStream([...currentAudioTracks, newVideoTrack])
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = composed
+      localVideoRef.current.muted = true
+      await localVideoRef.current.play().catch(() => {})
+    }
+  }
+
+  async function joinMeeting() {
+    if (!auth.currentUser) {
+      alert('Sign in first')
+      return
     }
 
-    stream.getTracks().forEach(track => pc.addTrack(track, stream))
+    if (joined) return
 
-    pc.onicecandidate = ev => {
-      if (ev.candidate) publishCandidate(ev.candidate)
-    }
+    try {
+      setStatus('getting-media')
 
-    const sRef = doc(db, 'sessions', sessionId)
-    const snap = await getDoc(sRef)
-    const data = snap.exists() ? snap.data() : {}
-    const myUid = auth.currentUser.uid
-    const initiatorUid = data?.initiatorUid || data?.participants?.[0]?.uid
-    const amInitiator = initiatorUid === myUid
+      const stream = await createLocalStream(cameraFacing)
+      localStreamRef.current = stream
+      await attachLocalPreview(stream)
 
-    const offerRef = doc(db, 'sessions', sessionId, 'signaling', 'offer')
-    const answerRef = doc(db, 'sessions', sessionId, 'signaling', 'answer')
-    const candCol = collection(db, 'sessions', sessionId, 'candidates')
-
-    candidatesUnsubRef.current = onSnapshot(candCol, snap2 => {
-      snap2.docChanges().forEach(async ch => {
-        if (ch.type !== 'added') return
-        const d = ch.doc.data()
-        if (!d || d.sender === myUid) return
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(d.candidate))
-        } catch {}
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       })
-    })
+      pcRef.current = pc
 
-    if (amInitiator) {
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      await updateDoc(sRef, { status: 'active' })
-      await addDoc(collection(db, 'sessions', sessionId, 'signaling'), {
-        type: 'offer',
-        sdp: offer.sdp,
-        sender: myUid,
-        createdAt: serverTimestamp()
-      })
-      offerUnsubRef.current = onSnapshot(offerRef, () => {})
-      answerUnsubRef.current = onSnapshot(answerRef, async snap2 => {
-        if (!snap2.exists()) return
-        const d = snap2.data()
-        if (!d?.sdp) return
-        try {
-          await pc.setRemoteDescription({ type: 'answer', sdp: d.sdp })
-        } catch {}
-      })
-    } else {
-      offerUnsubRef.current = onSnapshot(offerRef, async snap2 => {
-        if (!snap2.exists()) return
-        const d = snap2.data()
-        if (!d?.sdp) return
-        try {
-          await pc.setRemoteDescription({ type: 'offer', sdp: d.sdp })
-          const answer = await pc.createAnswer()
-          await pc.setLocalDescription(answer)
-          await addDoc(collection(db, 'sessions', sessionId, 'signaling'), {
-            type: 'answer',
-            sdp: answer.sdp,
-            sender: myUid,
-            createdAt: serverTimestamp()
+      const remoteStream = new MediaStream()
+      remoteStreamRef.current = remoteStream
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream
+
+      pc.ontrack = event => {
+        const [streamFromPeer] = event.streams
+        if (streamFromPeer) {
+          streamFromPeer.getTracks().forEach(track => {
+            if (!remoteStream.getTracks().some(t => t.id === track.id)) {
+              remoteStream.addTrack(track)
+            }
           })
-        } catch {}
-      })
-    }
+        }
+        setTimeout(() => {
+          remoteVideoRef.current?.play().catch(() => {})
+        }, 75)
+      }
 
-    setJoined(true)
-    setStatus('joined')
+      stream.getTracks().forEach(track => pc.addTrack(track, stream))
+
+      pc.onicecandidate = ev => {
+        if (ev.candidate) publishCandidate(ev.candidate)
+      }
+
+      const selfUid = auth.currentUser.uid
+      const initiatorUid = session?.initiatorUid || session?.participants?.[0]?.uid || selfUid
+      const amInitiator = initiatorUid === selfUid
+
+      const offerRef = doc(db, 'sessions', sessionId, 'signaling', 'offer')
+      const answerRef = doc(db, 'sessions', sessionId, 'signaling', 'answer')
+      const candCol = collection(db, 'sessions', sessionId, 'candidates')
+
+      candidatesUnsubRef.current = onSnapshot(candCol, snap => {
+        snap.docChanges().forEach(async change => {
+          if (change.type !== 'added') return
+          const data = change.doc.data()
+          if (!data || data.sender === selfUid) return
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate))
+          } catch {}
+        })
+      })
+
+      if (amInitiator) {
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        await setDoc(offerRef, {
+          type: offer.type,
+          sdp: offer.sdp,
+          sender: selfUid,
+          createdAt: serverTimestamp()
+        })
+
+        answerUnsubRef.current = onSnapshot(answerRef, async snap => {
+          if (!snap.exists()) return
+          const data = snap.data()
+          if (!data?.sdp) return
+          try {
+            await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
+            setStatus('connected')
+          } catch {}
+        })
+      } else {
+        offerUnsubRef.current = onSnapshot(offerRef, async snap => {
+          if (!snap.exists()) return
+          const data = snap.data()
+          if (!data?.sdp) return
+          try {
+            await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp })
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            await setDoc(answerRef, {
+              type: answer.type,
+              sdp: answer.sdp,
+              sender: selfUid,
+              createdAt: serverTimestamp()
+            })
+            setStatus('connected')
+          } catch {}
+        })
+      }
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') {
+          setStatus('connected')
+        }
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setStatus(pc.connectionState)
+        }
+      }
+
+      setJoined(true)
+    } catch (err) {
+      console.error(err)
+      alert('Unable to start video. Check camera and mic permissions.')
+      setStatus('error')
+    }
   }
 
   function toggleMic() {
@@ -192,45 +283,81 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     setCamOn(v => !v)
   }
 
+  async function switchCamera() {
+    const nextFacing = cameraFacing === 'user' ? 'environment' : 'user'
+    try {
+      const newVideoStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: nextFacing } },
+        audio: false
+      })
+
+      const newVideoTrack = newVideoStream.getVideoTracks()[0]
+      if (!newVideoTrack) return
+
+      await replaceCameraTrack(newVideoTrack)
+      setCameraFacing(nextFacing)
+    } catch (err) {
+      console.error(err)
+      alert('Could not switch camera on this device.')
+    }
+  }
+
   async function endSession() {
     try {
-      await updateDoc(doc(db, 'sessions', sessionId), {
-        status: 'finished',
-        endedAt: serverTimestamp()
-      })
+      await setDoc(
+        doc(db, 'sessions', sessionId),
+        {
+          status: 'finished',
+          endedAt: serverTimestamp()
+        },
+        { merge: true }
+      )
     } catch {}
-    setEnded(true)
-    setStatus('finished')
+
+    setSessionEnded(true)
     await cleanup()
   }
 
-  async function startNewSession() {
-    router.push('/join')
+  function startNewSession() {
+    window.location.href = '/join'
   }
-
-  const sessionEnded = ended || session?.status === 'finished'
 
   return (
     <div style={{ padding: 14 }}>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 180 }}>
-          <div style={{ fontWeight: 700, marginBottom: 6 }}>You</div>
+          <div style={{ fontWeight: 700, marginBottom: 6, color: '#e2e8f0' }}>You</div>
           <video
-            ref={localRef}
+            ref={localVideoRef}
             autoPlay
             playsInline
             muted
-            style={{ width: '100%', maxWidth: 280, height: 240, background: '#000', borderRadius: 10 }}
+            style={{
+              width: '100%',
+              maxWidth: 280,
+              height: 240,
+              background: '#000',
+              borderRadius: 12,
+              objectFit: 'cover'
+            }}
           />
         </div>
 
         <div style={{ minWidth: 180, flex: 1 }}>
-          <div style={{ fontWeight: 700, marginBottom: 6 }}>Partner{partner?.name ? ` • ${partner.name}` : ''}</div>
+          <div style={{ fontWeight: 700, marginBottom: 6, color: '#e2e8f0' }}>
+            Partner{partner?.name ? ` • ${partner.name}` : ''}
+          </div>
           <video
-            ref={remoteRef}
+            ref={remoteVideoRef}
             autoPlay
             playsInline
-            style={{ width: '100%', minHeight: 240, background: '#000', borderRadius: 10 }}
+            style={{
+              width: '100%',
+              minHeight: 240,
+              background: '#000',
+              borderRadius: 12,
+              objectFit: 'cover'
+            }}
           />
         </div>
       </div>
@@ -238,8 +365,9 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button onClick={toggleMic}>{micOn ? 'Mic Off' : 'Mic On'}</button>
         <button onClick={toggleCam}>{camOn ? 'Cam Off' : 'Cam On'}</button>
+        <button onClick={switchCamera}>Switch camera</button>
         {!joined ? (
-          <button onClick={startCall}>Join meeting</button>
+          <button onClick={joinMeeting}>Join meeting</button>
         ) : (
           <button onClick={cleanup}>Leave</button>
         )}
@@ -248,24 +376,31 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
         </button>
       </div>
 
-      <div style={{ marginTop: 10 }}>
+      <div style={{ marginTop: 10, color: '#cbd5e1' }}>
         <strong>Status:</strong> {status}
       </div>
+
+      {sessionEnded && (
+        <div
+          style={{
+            marginTop: 16,
+            padding: 16,
+            borderRadius: 14,
+            background: 'rgba(15,23,42,0.95)',
+            border: '1px solid rgba(148,163,184,0.22)',
+            color: '#e2e8f0'
+          }}
+        >
+          <h3 style={{ marginTop: 0 }}>Session ended</h3>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={startNewSession}>Start new session</button>
+          </div>
+        </div>
+      )}
 
       <div style={{ marginTop: 16 }}>
         <Chat sessionId={sessionId} />
       </div>
-
-      {sessionEnded && (
-        <div style={{ marginTop: 18 }}>
-          <EndCard
-            sessionId={sessionId}
-            partnerUid={partner?.uid || null}
-            partnerName={partner?.name || 'Partner'}
-            onStartNew={startNewSession}
-          />
-        </div>
-      )}
     </div>
   )
-}
+        }
