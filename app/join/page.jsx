@@ -15,6 +15,11 @@ import {
   setDoc,
   deleteDoc
 } from 'firebase/firestore'
+import {
+  ensureUserProfile,
+  getEffectivePlanId,
+  remainingForMode
+} from '../../lib/subscriptions'
 
 function clean(v = '') {
   return String(v).replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -31,6 +36,7 @@ export default function JoinPage() {
   const [subject, setSubject] = useState('Physics')
   const [mode, setMode] = useState('one-on-one')
   const [status, setStatus] = useState('idle')
+  const [accountInfo, setAccountInfo] = useState(null)
 
   const myQueueRef = useRef(null)
   const queueListenerRef = useRef(null)
@@ -172,6 +178,28 @@ export default function JoinPage() {
       return
     }
 
+    try {
+      const profile = await ensureUserProfile(user)
+      setAccountInfo(profile)
+
+      if (profile?.accountStatus === 'banned') {
+        alert('Your account is banned.')
+        setStatus('blocked')
+        return
+      }
+
+      if (getEffectivePlanId(profile) === 'free') {
+        const remaining = remainingForMode(profile, mode)
+        if (remaining <= 0) {
+          alert('Free credits finished. Open the plans page to upgrade.')
+          router.push('/plans')
+          return
+        }
+      }
+    } catch (err) {
+      console.warn('profile init failed', err)
+    }
+
     const uid = user.uid
     const name = user.displayName || user.email || 'Anonymous'
     const queueColName = queueCollectionName(exam, subject, mode)
@@ -286,6 +314,14 @@ export default function JoinPage() {
         Same exam + same subject + same mode only. Matching is immediate.
       </p>
 
+      {accountInfo && (
+        <div style={{ marginBottom: 16, padding: 14, borderRadius: 14, background: '#f8fafc', border: '1px solid #e5e7eb' }}>
+          <div><strong>Plan:</strong> {accountInfo.planLabel || 'Free'}</div>
+          <div><strong>Free 1-on-1 left:</strong> {accountInfo.freeOneOnOneRemaining ?? 10}</div>
+          <div><strong>Free group left:</strong> {accountInfo.freeGroupRemaining ?? 10}</div>
+        </div>
+      )}
+
       <div style={{ display: 'grid', gap: 12, maxWidth: 480 }}>
         <label>
           <div style={{ fontWeight: 700 }}>Exam</div>
@@ -356,4 +392,4 @@ export default function JoinPage() {
       </div>
     </div>
   )
-                                                    }
+      }
