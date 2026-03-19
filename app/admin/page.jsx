@@ -117,7 +117,11 @@ export default function AdminPage() {
       }
 
       const snap = await getDoc(doc(db, 'users', selectedReport.reportedUid))
-      setSelectedUserMeta(snap.exists() ? { id: snap.id, ...snap.data() } : { warningCount: 0, accountStatus: 'active' })
+      setSelectedUserMeta(
+        snap.exists()
+          ? { id: snap.id, ...snap.data() }
+          : { warningCount: 0, accountStatus: 'active' }
+      )
     }
 
     loadUserMeta()
@@ -192,7 +196,9 @@ export default function AdminPage() {
 
       setMessage(`Warning sent. User now has ${nextWarnings} warning(s).`)
       setAdminNote('')
-      setSelectedUserMeta(prev => prev ? { ...prev, warningCount: nextWarnings, accountStatus: 'active' } : prev)
+      setSelectedUserMeta(prev =>
+        prev ? { ...prev, warningCount: nextWarnings, accountStatus: 'active' } : prev
+      )
     } catch (err) {
       console.error(err)
       alert('Failed to send warning')
@@ -234,7 +240,9 @@ export default function AdminPage() {
 
       setMessage('User banned.')
       setAdminNote('')
-      setSelectedUserMeta(prev => prev ? { ...prev, warningCount: currentWarnings, accountStatus: 'banned' } : prev)
+      setSelectedUserMeta(prev =>
+        prev ? { ...prev, warningCount: currentWarnings, accountStatus: 'banned' } : prev
+      )
     } catch (err) {
       console.error(err)
       alert('Failed to ban user')
@@ -284,10 +292,7 @@ export default function AdminPage() {
         const planSnap = await tx.get(planRef)
         const livePlan = planSnap.exists() ? planSnap.data() : plan
 
-        const durationDays = Number(livePlan.durationDays || plan.durationDays || 0)
-        const expiry = planEndsAtFromPlanId(planId)
-
-        if (livePlan.isSpecial || plan.isSpecial) {
+        if ((livePlan.isSpecial || plan.isSpecial)) {
           const limit = Number(livePlan.salesLimit || plan.salesLimit || 100)
           const sold = Number(livePlan.salesCount || plan.salesCount || 0)
           if (sold >= limit) {
@@ -295,6 +300,8 @@ export default function AdminPage() {
           }
           tx.set(planRef, { salesCount: sold + 1, updatedAt: serverTimestamp() }, { merge: true })
         }
+
+        const expiry = planEndsAtFromPlanId(planId)
 
         tx.set(
           userRef,
@@ -321,8 +328,7 @@ export default function AdminPage() {
             reviewedAt: serverTimestamp(),
             planGrantedAt: serverTimestamp(),
             planExpiresAt: expiry,
-            adminNote: adminNote.trim() || '',
-            durationDays
+            adminNote: adminNote.trim() || ''
           },
           { merge: true }
         )
@@ -422,46 +428,48 @@ export default function AdminPage() {
           <div style={scrollList}>
             {reports.length === 0 ? (
               <div style={{ color: '#6b7280' }}>No reports yet.</div>
-            ) : reports.map(report => {
-              const active = report.id === selectedReportId
-              return (
-                <button
-                  key={report.id}
-                  onClick={() => setSelectedReportId(report.id)}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    padding: 14,
-                    border: 'none',
-                    borderBottom: '1px solid #e5e7eb',
-                    background: active ? '#eff6ff' : '#fff',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                    <strong>{report.reportedName || 'Unknown user'}</strong>
-                    <span style={{
-                      fontSize: 12,
-                      padding: '4px 8px',
-                      borderRadius: 999,
-                      background:
-                        report.status === 'open' ? '#fef3c7' :
-                        report.status === 'banned' ? '#fee2e2' :
-                        report.status === 'warning-issued' ? '#dbeafe' :
-                        '#e5e7eb'
-                    }}>
-                      {report.status || 'open'}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 13, color: '#6b7280', marginTop: 6 }}>
-                    {(report.selectedReasons || []).slice(0, 2).join(' • ') || 'No preset reason'}
-                  </div>
-                  <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>
-                    {fmtDate(report.createdAt)}
-                  </div>
-                </button>
-              )
-            })}
+            ) : (
+              reports.map(report => {
+                const active = report.id === selectedReportId
+                return (
+                  <button
+                    key={report.id}
+                    onClick={() => setSelectedReportId(report.id)}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: 14,
+                      border: 'none',
+                      borderBottom: '1px solid #e5e7eb',
+                      background: active ? '#eff6ff' : '#fff',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                      <strong>{report.reportedName || 'Unknown user'}</strong>
+                      <span style={{
+                        fontSize: 12,
+                        padding: '4px 8px',
+                        borderRadius: 999,
+                        background:
+                          report.status === 'open' ? '#fef3c7' :
+                          report.status === 'banned' ? '#fee2e2' :
+                          report.status === 'warning-issued' ? '#dbeafe' :
+                          '#e5e7eb'
+                      }}>
+                        {report.status || 'open'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 13, color: '#6b7280', marginTop: 6 }}>
+                      {(report.selectedReasons || []).slice(0, 2).join(' • ') || 'No preset reason'}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>
+                      {fmtDate(report.createdAt)}
+                    </div>
+                  </button>
+                )
+              })
+            )}
           </div>
         </div>
 
@@ -542,38 +550,36 @@ export default function AdminPage() {
           <div style={scrollList}>
             {requests.length === 0 ? (
               <div style={{ color: '#6b7280' }}>No subscription requests yet.</div>
-            ) : requests.map(req => {
-              const active = req.id === selectedRequestId
-              return (
-                <button
-                  key={req.id}
-                  onClick={() => setSelectedRequestId(req.id)}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    padding: 14,
-                    border: 'none',
-                    borderBottom: '1px solid #e5e7eb',
-                    background: active ? '#eff6ff' : '#fff',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                    <strong>{req.name || 'Anonymous'}</strong>
-                    <span style={{
-                      fontSize: 12,
-                      padding: '4px 8px',
-                      borderRadius: 999,
-                      background:
-                        req.status === 'pending' ? '#fef3c7' :
-                        req.status === 'approved' ? '#dcfce7' :
-                        '#fee2e2'
-                    }}>
-                      {req.status || 'pending'}
-                    </span>
-                  </div>
-                  <div style={{ color: '#6b7280', marginTop: 6 }}>
-                    {req.planLabel || req.planId || 'Plan'}
-                  </div>
-                  <div style={{ marginTop: 4, fontSize: 13, color: '#0f172a' }}>
-                 
+            ) : (
+              requests.map(req => {
+                const active = req.id === selectedRequestId
+                return (
+                  <button
+                    key={req.id}
+                    onClick={() => setSelectedRequestId(req.id)}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: 14,
+                      border: 'none',
+                      borderBottom: '1px solid #e5e7eb',
+                      background: active ? '#eff6ff' : '#fff',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                      <strong>{req.name || 'Anonymous'}</strong>
+                      <span style={{
+                        fontSize: 12,
+                        padding: '4px 8px',
+                        borderRadius: 999,
+                        background:
+                          req.status === 'pending' ? '#fef3c7' :
+                          req.status === 'approved' ? '#dcfce7' :
+                          '#fee2e2'
+                      }}>
+                        {req.status || 'pending'}
+                      </span>
+                    </div>
+                    <div style={{ color: '#6b7280', marginTop: 6 }}>
+                      {req.planLabel || re
