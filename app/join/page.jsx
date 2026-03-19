@@ -7,6 +7,7 @@ import { signInWithPopup } from 'firebase/auth'
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   runTransaction,
@@ -73,7 +74,7 @@ export default function JoinPage() {
     })
   }
 
-  async function tryMatch(queueColName, myUid) {
+  async function tryMatch(queueColName, uid, name) {
     if (matchingRef.current || redirectedRef.current) return
     matchingRef.current = true
 
@@ -87,18 +88,14 @@ export default function JoinPage() {
           return (
             data &&
             data.uid &&
-            data.uid !== myUid &&
+            data.uid !== uid &&
             !data.matched &&
             data.exam === exam &&
             data.subject === subject &&
             data.mode === mode
           )
         })
-        .sort((a, b) => {
-          const ta = a.data()?.queuedAt || 0
-          const tb = b.data()?.queuedAt || 0
-          return ta - tb
-        })
+        .sort((a, b) => (a.data()?.queuedAt || 0) - (b.data()?.queuedAt || 0))
 
       const partnerDoc = candidates[0]
       if (!partnerDoc) {
@@ -107,7 +104,7 @@ export default function JoinPage() {
       }
 
       const partnerRef = doc(db, queueColName, partnerDoc.id)
-      const myRef = doc(db, queueColName, myUid)
+      const myRef = doc(db, queueColName, uid)
       const sessionRef = doc(collection(db, 'sessions'))
 
       await runTransaction(db, async tx => {
@@ -117,14 +114,14 @@ export default function JoinPage() {
         if (!mySnap.exists()) throw new Error('my-queue-missing')
         if (!otherSnap.exists()) throw new Error('partner-queue-missing')
 
-        const me = mySnap.data()
-        const partner = otherSnap.data()
+        const myData = mySnap.data()
+        const otherData = otherSnap.data()
 
-        if (!me || !partner) throw new Error('missing-data')
-        if (me.uid === partner.uid) throw new Error('self-match')
-        if (me.matched || partner.matched) throw new Error('already-matched')
+        if (!myData || !otherData) throw new Error('missing-data')
+        if (myData.uid === otherData.uid) throw new Error('self-match')
+        if (myData.matched || otherData.matched) throw new Error('already-matched')
 
-        const initiatorUid = (me.queuedAt || 0) <= (partner.queuedAt || 0) ? me.uid : partner.uid
+        const initiatorUid = (myData.queuedAt || 0) <= (otherData.queuedAt || 0) ? myData.uid : otherData.uid
 
         tx.set(sessionRef, {
           exam,
@@ -132,10 +129,10 @@ export default function JoinPage() {
           mode,
           status: 'active',
           createdAt: serverTimestamp(),
-          participantUids: [me.uid, partner.uid],
+          participantUids: [myData.uid, otherData.uid],
           participants: [
-            { uid: me.uid, name: me.name || 'You' },
-            { uid: partner.uid, name: partner.name || 'Partner' }
+            { uid: myData.uid, name: myData.name || name || 'You' },
+            { uid: otherData.uid, name: otherData.name || 'Partner' }
           ],
           initiatorUid
         })
@@ -143,13 +140,13 @@ export default function JoinPage() {
         tx.update(myRef, {
           matched: true,
           sessionId: sessionRef.id,
-          matchedWith: { uid: partner.uid, name: partner.name || 'Partner' }
+          matchedWith: { uid: otherData.uid, name: otherData.name || 'Partner' }
         })
 
         tx.update(partnerRef, {
           matched: true,
           sessionId: sessionRef.id,
-          matchedWith: { uid: me.uid, name: me.name || 'You' }
+          matchedWith: { uid: myData.uid, name: myData.name || name || 'You' }
         })
       })
 
@@ -185,6 +182,15 @@ export default function JoinPage() {
     matchingRef.current = false
 
     try {
+      const existing = await getDoc(myRef)
+      if (existing.exists()) {
+        const data = existing.data()
+        if (data?.sessionId && data?.matched) {
+          router.push(`/session/${data.sessionId}`)
+          return
+        }
+      }
+
       await setDoc(myRef, {
         uid,
         name,
@@ -212,12 +218,11 @@ export default function JoinPage() {
 
     queueListenerRef.current = onSnapshot(collection(db, queueColName), async () => {
       if (redirectedRef.current) return
-      await tryMatch(queueColName, uid)
+      await tryMatch(queueColName, uid, name)
     })
 
     setStatus('searching')
-
-    await tryMatch(queueColName, uid)
+    await tryMatch(queueColName, uid, name)
   }
 
   async function cancelQueue() {
@@ -351,4 +356,4 @@ export default function JoinPage() {
       </div>
     </div>
   )
-}
+                                                    }
