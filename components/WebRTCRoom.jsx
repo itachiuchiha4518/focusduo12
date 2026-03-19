@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import Chat from './Chat'
+import EndCard from './EndCard'
 
 export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const localVideoRef = useRef(null)
@@ -23,6 +24,8 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const offerUnsubRef = useRef(null)
   const answerUnsubRef = useRef(null)
   const candidatesUnsubRef = useRef(null)
+  const connectedRef = useRef(false)
+  const seenCandidatesRef = useRef(new Set())
 
   const [session, setSession] = useState(sessionProp || null)
   const [status, setStatus] = useState('idle')
@@ -52,7 +55,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       }
     }
 
-    if (!session) loadSession()
+    loadSession()
 
     const unsub = onSnapshot(doc(db, 'sessions', sessionId), snap => {
       if (!snap.exists()) return
@@ -77,6 +80,8 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     offerUnsubRef.current = null
     answerUnsubRef.current = null
     candidatesUnsubRef.current = null
+    connectedRef.current = false
+    seenCandidatesRef.current = new Set()
 
     try {
       if (pcRef.current) {
@@ -111,13 +116,12 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   }
 
   async function createLocalStream(facingMode = 'user') {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    return navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
       video: {
         facingMode: { ideal: facingMode }
       }
     })
-    return stream
   }
 
   async function attachLocalPreview(stream) {
@@ -136,14 +140,12 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       await videoSender.replaceTrack(newVideoTrack)
     }
 
-    const oldVideoTracks = localStreamRef.current?.getVideoTracks?.() || []
-    oldVideoTracks.forEach(t => t.stop())
-    localStreamRef.current?.removeTrack?.(oldVideoTracks[0])
+    const audioTracks = localStreamRef.current?.getAudioTracks?.() || []
+    const currentVideoTracks = localStreamRef.current?.getVideoTracks?.() || []
+    currentVideoTracks.forEach(t => t.stop())
 
-    localStreamRef.current?.addTrack?.(newVideoTrack)
-
-    const currentAudioTracks = localStreamRef.current?.getAudioTracks?.() || []
-    const composed = new MediaStream([...currentAudioTracks, newVideoTrack])
+    const composed = new MediaStream([...audioTracks, newVideoTrack])
+    localStreamRef.current = composed
 
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = composed
@@ -207,6 +209,9 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       candidatesUnsubRef.current = onSnapshot(candCol, snap => {
         snap.docChanges().forEach(async change => {
           if (change.type !== 'added') return
+          if (seenCandidatesRef.current.has(change.doc.id)) return
+          seenCandidatesRef.current.add(change.doc.id)
+
           const data = change.doc.data()
           if (!data || data.sender === selfUid) return
           try {
@@ -216,22 +221,26 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       })
 
       if (amInitiator) {
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-        await setDoc(offerRef, {
-          type: offer.type,
-          sdp: offer.sdp,
-          sender: selfUid,
-          createdAt: serverTimestamp()
-        })
+        const existingOffer = await getDoc(offerRef)
+        if (!existingOffer.exists()) {
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          await setDoc(offerRef, {
+            type: offer.type,
+            sdp: offer.sdp,
+            sender: selfUid,
+            createdAt: serverTimestamp()
+          })
+        }
 
         answerUnsubRef.current = onSnapshot(answerRef, async snap => {
           if (!snap.exists()) return
           const data = snap.data()
           if (!data?.sdp) return
           try {
-            await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
-            setStatus('connected')
+            if (!pc.currentRemoteDescription) {
+              await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
+            }
           } catch {}
         })
       } else {
@@ -240,22 +249,24 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
           const data = snap.data()
           if (!data?.sdp) return
           try {
-            await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp })
-            const answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
-            await setDoc(answerRef, {
-              type: answer.type,
-              sdp: answer.sdp,
-              sender: selfUid,
-              createdAt: serverTimestamp()
-            })
-            setStatus('connected')
+            if (!pc.currentRemoteDescription) {
+              await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp })
+              const answer = await pc.createAnswer()
+              await pc.setLocalDescription(answer)
+              await setDoc(answerRef, {
+                type: answer.type,
+                sdp: answer.sdp,
+                sender: selfUid,
+                createdAt: serverTimestamp()
+              })
+            }
           } catch {}
         })
       }
 
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') {
+          connectedRef.current = true
           setStatus('connected')
         }
         if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
@@ -264,6 +275,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       }
 
       setJoined(true)
+      setStatus('joined')
     } catch (err) {
       console.error(err)
       alert('Unable to start video. Check camera and mic permissions.')
@@ -403,4 +415,4 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       </div>
     </div>
   )
-        }
+    }
