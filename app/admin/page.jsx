@@ -107,8 +107,8 @@ export default function AdminPage() {
     return () => unsub()
   }, [])
 
-  const selectedReport = reports.find(r => r.id === selectedReportId)
-  const selectedRequest = requests.find(r => r.id === selectedRequestId)
+  const selectedReport = useMemo(() => reports.find(r => r.id === selectedReportId) || null, [reports, selectedReportId])
+  const selectedRequest = useMemo(() => requests.find(r => r.id === selectedRequestId) || null, [requests, selectedRequestId])
 
   useEffect(() => {
     async function loadUser() {
@@ -261,6 +261,85 @@ export default function AdminPage() {
     reader.readAsDataURL(file)
   }
 
+  async function grantPlan() {
+    if (!selectedRequest) return
+    setBusy(true)
+    try {
+      const reqRef = doc(db, 'subscriptionRequests', selectedRequest.id)
+      const planId = selectedRequest.planId
+      const plan = plans[planId] || getPlanDefinition(planId)
+      const planRef = doc(db, 'plans', planId)
+      const userRef = doc(db, 'users', selectedRequest.uid)
+      const expiry = planExpiryFromPlanId(planId)
+
+      await runTransaction(db, async tx => {
+        const reqSnap = await tx.get(reqRef)
+        if (!reqSnap.exists()) throw new Error('request-missing')
+        if ((reqSnap.data().status || 'pending') !== 'pending') throw new Error('request-not-pending')
+
+        const planSnap = await tx.get(planRef)
+        const livePlan = planSnap.exists() ? planSnap.data() : plan
+
+        if (livePlan.isSpecial || plan.isSpecial) {
+          const sold = Number(livePlan.salesCount || plan.salesCount || 0)
+          const limit = Number(livePlan.salesLimit || plan.salesLimit || 100)
+          if (sold >= limit) throw new Error('special-plan-sold-out')
+          tx.set(planRef, { salesCount: sold + 1, updatedAt: serverTimestamp() }, { merge: true })
+        }
+
+        tx.set(userRef, {
+          uid: selectedRequest.uid,
+          name: selectedRequest.name || '',
+          email: selectedRequest.email || '',
+          planId,
+          planLabel: livePlan.label || plan.label || 'Paid plan',
+          planType: 'paid',
+          planStatus: 'active',
+          accountStatus: 'active',
+          planExpiresAt: expiry,
+          updatedAt: serverTimestamp()
+        }, { merge: true })
+
+        tx.set(reqRef, {
+          status: 'approved',
+          reviewedBy: ADMIN_UID,
+          reviewedAt: serverTimestamp(),
+          planGrantedAt: serverTimestamp(),
+          planExpiresAt: expiry,
+          adminNote: note.trim() || ''
+        }, { merge: true })
+      })
+
+      setMsg('Plan granted.')
+      setNote('')
+    } catch (e) {
+      console.error(e)
+      alert(`Failed to grant plan: ${e.message || e}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function declineRequest() {
+    if (!selectedRequest) return
+    setBusy(true)
+    try {
+      await updateDoc(doc(db, 'subscriptionRequests', selectedRequest.id), {
+        status: 'declined',
+        reviewedBy: ADMIN_UID,
+        reviewedAt: serverTimestamp(),
+        adminNote: note.trim() || ''
+      })
+      setMsg('Request declined.')
+      setNote('')
+    } catch (e) {
+      console.error(e)
+      alert('Failed to decline request')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const stats = useMemo(() => ({
     reports: reports.length,
     openReports: reports.filter(r => r.status === 'open').length,
@@ -285,7 +364,8 @@ export default function AdminPage() {
         <button onClick={logout} style={styles.gray}>Sign out</button>
       </div>
     )
-}
+  }
+
   return (
     <div style={styles.page}>
       <div style={styles.topRow}>
@@ -494,7 +574,25 @@ export default function AdminPage() {
                   <input
                     type="file"
                     accept="image/*"
-                    onChange={e => uploadQrImage(id, e.target.files?.[0] || null)}
+                    onChange={e => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+                      const reader = new FileReader()
+                      reader.onload = async () => {
+                        const dataUrl = String(reader.result || '')
+                        setPlans(prev => ({
+                          ...prev,
+                          [id]: { ...(prev[id] || {}), qrImageUrl: dataUrl, id }
+                        }))
+                        await setDoc(doc(db, 'plans', id), {
+                          ...(plans[id] || getPlanDefinition(id)),
+                          qrImageUrl: dataUrl,
+                          updatedAt: serverTimestamp()
+                        }, { merge: true })
+                        setMsg(`QR uploaded for ${id}.`)
+                      }
+                      reader.readAsDataURL(file)
+                    }}
                     style={styles.input}
                   />
                 </div>
@@ -537,4 +635,4 @@ export default function AdminPage() {
       </div>
     </div>
   )
-                      }
+}
