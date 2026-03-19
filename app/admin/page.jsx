@@ -17,64 +17,26 @@ import { PLAN_DEFS, getPlanDefinition, planEndsAtFromPlanId } from '../../lib/su
 
 const ADMIN_UID = 'NIsbHB9RmXgR5vJEyv8CuV0ggD03'
 
-const box = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 14,
-  background: '#fff',
-  padding: 16
-}
-
-const input = {
-  width: '100%',
-  padding: 10,
-  borderRadius: 10,
-  border: '1px solid #d1d5db',
-  outline: 'none'
-}
-
-const buttonBlue = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#2563eb',
-  color: '#fff',
-  fontWeight: 800,
-  cursor: 'pointer'
-}
-
-const buttonGray = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: '1px solid #d1d5db',
-  background: '#fff',
-  cursor: 'pointer'
-}
-
-const buttonWarn = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#f59e0b',
-  color: '#111827',
-  fontWeight: 800,
-  cursor: 'pointer'
-}
-
-const buttonBan = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#dc2626',
-  color: '#fff',
-  fontWeight: 800,
-  cursor: 'pointer'
+const styles = {
+  page: { padding: 24, maxWidth: 1400, margin: '0 auto', fontFamily: 'system-ui, sans-serif' },
+  row: { display: 'flex', gap: 12, flexWrap: 'wrap' },
+  card: { border: '1px solid #e5e7eb', borderRadius: 14, background: '#fff', padding: 16 },
+  panel: { border: '1px solid #e5e7eb', borderRadius: 14, background: '#fff', padding: 16 },
+  list: { maxHeight: 520, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 12 },
+  input: { width: '100%', padding: 10, borderRadius: 10, border: '1px solid #d1d5db', outline: 'none' },
+  textarea: { width: '100%', minHeight: 90, padding: 10, borderRadius: 10, border: '1px solid #d1d5db', outline: 'none', resize: 'vertical' },
+  blue: { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#2563eb', color: '#fff', fontWeight: 800, cursor: 'pointer' },
+  gray: { padding: '10px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' },
+  warn: { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#f59e0b', color: '#111827', fontWeight: 800, cursor: 'pointer' },
+  ban: { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#dc2626', color: '#fff', fontWeight: 800, cursor: 'pointer' },
+  chip: { padding: '6px 10px', borderRadius: 999, background: '#f3f4f6', border: '1px solid #e5e7eb', fontSize: 13 }
 }
 
 function clonePlans() {
   return JSON.parse(JSON.stringify(PLAN_DEFS))
 }
 
-function timeVal(v) {
+function ts(v) {
   if (!v) return 0
   if (typeof v.toMillis === 'function') return v.toMillis()
   if (typeof v.seconds === 'number') return v.seconds * 1000
@@ -109,20 +71,18 @@ export default function AdminPage() {
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'reports'), snap => {
-      const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt))
+      const arr = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => ts(b.createdAt) - ts(a.createdAt))
       setReports(arr)
-      setSelectedReportId(prev => (prev && arr.some(r => r.id === prev)) ? prev : (arr[0]?.id || null))
+      setSelectedReportId(prev => (prev && arr.some(r => r.id === prev) ? prev : arr[0]?.id || null))
     })
     return () => unsub()
   }, [])
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'subscriptionRequests'), snap => {
-      const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt))
+      const arr = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => ts(b.createdAt) - ts(a.createdAt))
       setRequests(arr)
-      setSelectedRequestId(prev => (prev && arr.some(r => r.id === prev)) ? prev : (arr[0]?.id || null))
+      setSelectedRequestId(prev => (prev && arr.some(r => r.id === prev) ? prev : arr[0]?.id || null))
     })
     return () => unsub()
   }, [])
@@ -138,15 +98,8 @@ export default function AdminPage() {
     return () => unsub()
   }, [])
 
-  const selectedReport = useMemo(
-    () => reports.find(r => r.id === selectedReportId) || null,
-    [reports, selectedReportId]
-  )
-
-  const selectedRequest = useMemo(
-    () => requests.find(r => r.id === selectedRequestId) || null,
-    [requests, selectedRequestId]
-  )
+  const selectedReport = useMemo(() => reports.find(r => r.id === selectedReportId) || null, [reports, selectedReportId])
+  const selectedRequest = useMemo(() => requests.find(r => r.id === selectedRequestId) || null, [requests, selectedRequestId])
 
   useEffect(() => {
     async function loadUser() {
@@ -199,8 +152,8 @@ export default function AdminPage() {
     setBusy(true)
     try {
       const userRef = doc(db, 'users', selectedReport.reportedUid)
-      const userSnap = await getDoc(userRef)
-      const current = userSnap.exists() ? (userSnap.data().warningCount || 0) : 0
+      const snap = await getDoc(userRef)
+      const current = snap.exists() ? (snap.data().warningCount || 0) : 0
       const next = current + 1
 
       await setDoc(userRef, {
@@ -238,8 +191,8 @@ export default function AdminPage() {
     setBusy(true)
     try {
       const userRef = doc(db, 'users', selectedReport.reportedUid)
-      const userSnap = await getDoc(userRef)
-      const current = userSnap.exists() ? (userSnap.data().warningCount || 0) : 0
+      const snap = await getDoc(userRef)
+      const current = snap.exists() ? (snap.data().warningCount || 0) : 0
 
       await setDoc(userRef, {
         warningCount: current,
@@ -271,13 +224,27 @@ export default function AdminPage() {
     }
   }
 
+  async function savePlan(planId) {
+    setBusy(true)
+    try {
+      const plan = plans[planId] || getPlanDefinition(planId)
+      await setDoc(doc(db, 'plans', planId), { ...plan, updatedAt: serverTimestamp() }, { merge: true })
+      setMsg(`Saved ${plan.label || planId}.`)
+    } catch (e) {
+      console.error(e)
+      alert('Failed to save plan')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function grantPlan() {
     if (!selectedRequest) return
     setBusy(true)
     try {
       const reqRef = doc(db, 'subscriptionRequests', selectedRequest.id)
       const planId = selectedRequest.planId
-      const livePlan = plans[planId] || getPlanDefinition(planId)
+      const plan = plans[planId] || getPlanDefinition(planId)
       const planRef = doc(db, 'plans', planId)
       const userRef = doc(db, 'users', selectedRequest.uid)
       const expiry = planEndsAtFromPlanId(planId)
@@ -288,11 +255,11 @@ export default function AdminPage() {
         if ((reqSnap.data().status || 'pending') !== 'pending') throw new Error('request-not-pending')
 
         const planSnap = await tx.get(planRef)
-        const planData = planSnap.exists() ? planSnap.data() : livePlan
+        const livePlan = planSnap.exists() ? planSnap.data() : plan
 
-        if (planData.isSpecial || livePlan.isSpecial) {
-          const sold = Number(planData.salesCount || livePlan.salesCount || 0)
-          const limit = Number(planData.salesLimit || livePlan.salesLimit || 100)
+        if (livePlan.isSpecial || plan.isSpecial) {
+          const sold = Number(livePlan.salesCount || plan.salesCount || 0)
+          const limit = Number(livePlan.salesLimit || plan.salesLimit || 100)
           if (sold >= limit) throw new Error('special-plan-sold-out')
           tx.set(planRef, { salesCount: sold + 1, updatedAt: serverTimestamp() }, { merge: true })
         }
@@ -302,7 +269,7 @@ export default function AdminPage() {
           name: selectedRequest.name || '',
           email: selectedRequest.email || '',
           planId,
-          planLabel: planData.label || livePlan.label || 'Paid plan',
+          planLabel: livePlan.label || plan.label || 'Paid plan',
           planType: 'paid',
           planStatus: 'active',
           accountStatus: 'active',
@@ -350,20 +317,6 @@ export default function AdminPage() {
     }
   }
 
-  async function savePlan(planId) {
-    setBusy(true)
-    try {
-      const plan = plans[planId] || getPlanDefinition(planId)
-      await setDoc(doc(db, 'plans', planId), { ...plan, updatedAt: serverTimestamp() }, { merge: true })
-      setMsg(`Saved ${plan.label || planId}.`)
-    } catch (e) {
-      console.error(e)
-      alert('Failed to save plan')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const stats = useMemo(() => ({
     reports: reports.length,
     openReports: reports.filter(r => r.status === 'open').length,
@@ -373,44 +326,44 @@ export default function AdminPage() {
 
   if (!user) {
     return (
-      <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+      <div style={styles.page}>
         <h1>Admin Panel</h1>
-        <button onClick={login} style={buttonBlue}>Sign in with Google</button>
+        <button onClick={login} style={styles.blue}>Sign in with Google</button>
       </div>
     )
   }
 
   if (user.uid !== ADMIN_UID) {
     return (
-      <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+      <div style={styles.page}>
         <h1>Admin Panel</h1>
         <p>You are signed in but not authorized.</p>
-        <button onClick={logout} style={buttonGray}>Sign out</button>
+        <button onClick={logout} style={styles.gray}>Sign out</button>
       </div>
     )
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 1500, margin: '0 auto' }}>
+    <div style={styles.page}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div>
           <h1 style={{ marginBottom: 6 }}>Admin Panel</h1>
           <div style={{ color: '#6b7280' }}>Reports, warnings, bans, subscription requests, and plan QR settings.</div>
         </div>
-        <button onClick={logout} style={buttonGray}>Sign out</button>
+        <button onClick={logout} style={styles.gray}>Sign out</button>
       </div>
 
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 18 }}>
-        <div style={box}><div style={{ color: '#6b7280' }}>Total reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.reports}</div></div>
-        <div style={box}><div style={{ color: '#6b7280' }}>Open reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.openReports}</div></div>
-        <div style={box}><div style={{ color: '#6b7280' }}>Total requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.requests}</div></div>
-        <div style={box}><div style={{ color: '#6b7280' }}>Pending requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.pendingRequests}</div></div>
+      <div style={styles.row}>
+        <div style={styles.card}><div style={{ color: '#6b7280' }}>Total reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.reports}</div></div>
+        <div style={styles.card}><div style={{ color: '#6b7280' }}>Open reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.openReports}</div></div>
+        <div style={styles.card}><div style={{ color: '#6b7280' }}>Total requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.requests}</div></div>
+        <div style={styles.card}><div style={{ color: '#6b7280' }}>Pending requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.pendingRequests}</div></div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 18 }}>
-        <div style={box}>
+        <div style={styles.panel}>
           <h2 style={{ marginTop: 0 }}>Reports</h2>
-          <div style={{ maxHeight: 520, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 12 }}>
+          <div style={styles.list}>
             {reports.length === 0 ? (
               <div style={{ padding: 14, color: '#6b7280' }}>No reports yet.</div>
             ) : reports.map(r => (
@@ -442,20 +395,20 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <div style={box}>
+        <div style={styles.panel}>
           {!selectedReport ? (
             <div style={{ color: '#6b7280' }}>Select a report.</div>
           ) : (
             <>
               <h2 style={{ marginTop: 0 }}>{selectedReport.reportedName || 'Reported user'}</h2>
               <div style={{ color: '#6b7280' }}>Session: {selectedReport.sessionId || '—'}</div>
+
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Reasons</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {(selectedReport.selectedReasons || []).length
-                    ? selectedReport.selectedReasons.map(x => <span key={x} style={{ padding: '6px 10px', borderRadius: 999, background: '#f3f4f6', border: '1px solid #e5e7eb' }}>{x}</span>)
-                    : <span style={{ color: '#6b7280' }}>No preset reasons.</span>
-                  }
+                  {(selectedReport.selectedReasons || []).length > 0
+                    ? selectedReport.selectedReasons.map(x => <span key={x} style={styles.chip}>{x}</span>)
+                    : <span style={{ color: '#6b7280' }}>No preset reasons.</span>}
                 </div>
               </div>
 
@@ -481,25 +434,20 @@ export default function AdminPage() {
 
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Admin note</div>
-                <textarea
-                  value={note}
-                  onChange={e => setNote(e.target.value)}
-                  placeholder="Optional note"
-                  style={{ ...input, minHeight: 90, resize: 'vertical' }}
-                />
+                <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Optional note" style={styles.textarea} />
               </div>
 
               {selectedUser && (
                 <div style={{ marginTop: 12, padding: 14, borderRadius: 12, background: '#fff7ed', border: '1px solid #e5e7eb' }}>
                   <div style={{ fontWeight: 800 }}>Warnings before action: {selectedUser.warningCount ?? 0}</div>
-                  <div style={{ color: '#6b7280' }}>Use this before warning or banning.</div>
+                  <div style={{ color: '#6b7280' }}>Use this before deciding warning or ban.</div>
                 </div>
               )}
 
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
-                <button onClick={declineReport} disabled={busy} style={buttonGray}>Decline</button>
-                <button onClick={warnUser} disabled={busy} style={buttonWarn}>Send warning</button>
-                <button onClick={banUser} disabled={busy} style={buttonBan}>Ban user</button>
+              <div style={styles.row}>
+                <button onClick={declineReport} disabled={busy} style={styles.gray}>Decline</button>
+                <button onClick={warnUser} disabled={busy} style={styles.warn}>Send warning</button>
+                <button onClick={banUser} disabled={busy} style={styles.ban}>Ban user</button>
                 <div style={{ alignSelf: 'center', color: '#2563eb', fontWeight: 600 }}>{msg}</div>
               </div>
             </>
@@ -508,9 +456,9 @@ export default function AdminPage() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 18 }}>
-        <div style={box}>
+        <div style={styles.panel}>
           <h2 style={{ marginTop: 0 }}>Subscription requests</h2>
-          <div style={{ maxHeight: 520, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 12 }}>
+          <div style={styles.list}>
             {requests.length === 0 ? (
               <div style={{ padding: 14, color: '#6b7280' }}>No subscription requests yet.</div>
             ) : requests.map(r => (
@@ -541,10 +489,12 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <div style={box}>
+        <div style={styles.panel}>
           {!selectedRequest ? (
             <div style={{ color: '#6b7280' }}>Select a request.</div>
           ) : (
             <>
               <h2 style={{ marginTop: 0 }}>{selectedRequest.name || 'Anonymous'}</h2>
-              <div style={{ color: '#6b7280' }}>{sele
+              <div style={{ color: '#6b7280' }}>{selectedRequest.email || '—'}</div>
+              <div style={{ marginTop: 12 }}>
+                <div><strong>Plan:</strong> {se
