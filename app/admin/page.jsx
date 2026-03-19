@@ -17,14 +17,14 @@ import { PLAN_DEFS, getPlanDefinition, planEndsAtFromPlanId } from '../../lib/su
 
 const ADMIN_UID = 'NIsbHB9RmXgR5vJEyv8CuV0ggD03'
 
-const styles = {
+const S = {
   page: { padding: 24, maxWidth: 1400, margin: '0 auto', fontFamily: 'system-ui, sans-serif' },
   row: { display: 'flex', gap: 12, flexWrap: 'wrap' },
-  card: { border: '1px solid #e5e7eb', borderRadius: 14, background: '#fff', padding: 16 },
+  box: { border: '1px solid #e5e7eb', borderRadius: 14, background: '#fff', padding: 16 },
   panel: { border: '1px solid #e5e7eb', borderRadius: 14, background: '#fff', padding: 16 },
   list: { maxHeight: 520, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 12 },
   input: { width: '100%', padding: 10, borderRadius: 10, border: '1px solid #d1d5db', outline: 'none' },
-  textarea: { width: '100%', minHeight: 90, padding: 10, borderRadius: 10, border: '1px solid #d1d5db', outline: 'none', resize: 'vertical' },
+  ta: { width: '100%', minHeight: 90, padding: 10, borderRadius: 10, border: '1px solid #d1d5db', outline: 'none', resize: 'vertical' },
   blue: { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#2563eb', color: '#fff', fontWeight: 800, cursor: 'pointer' },
   gray: { padding: '10px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' },
   warn: { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#f59e0b', color: '#111827', fontWeight: 800, cursor: 'pointer' },
@@ -325,48 +325,35 @@ export default function AdminPage() {
   }), [reports, requests])
 
   if (!user) {
-    return (
-      <div style={styles.page}>
-        <h1>Admin Panel</h1>
-        <button onClick={login} style={styles.blue}>Sign in with Google</button>
-      </div>
-    )
+    return <div style={S.page}><h1>Admin Panel</h1><button onClick={login} style={S.blue}>Sign in with Google</button></div>
   }
 
   if (user.uid !== ADMIN_UID) {
-    return (
-      <div style={styles.page}>
-        <h1>Admin Panel</h1>
-        <p>You are signed in but not authorized.</p>
-        <button onClick={logout} style={styles.gray}>Sign out</button>
-      </div>
-    )
+    return <div style={S.page}><h1>Admin Panel</h1><p>You are signed in but not authorized.</p><button onClick={logout} style={S.gray}>Sign out</button></div>
   }
 
   return (
-    <div style={styles.page}>
+    <div style={S.page}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div>
           <h1 style={{ marginBottom: 6 }}>Admin Panel</h1>
           <div style={{ color: '#6b7280' }}>Reports, warnings, bans, subscription requests, and plan QR settings.</div>
         </div>
-        <button onClick={logout} style={styles.gray}>Sign out</button>
+        <button onClick={logout} style={S.gray}>Sign out</button>
       </div>
 
-      <div style={styles.row}>
-        <div style={styles.card}><div style={{ color: '#6b7280' }}>Total reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.reports}</div></div>
-        <div style={styles.card}><div style={{ color: '#6b7280' }}>Open reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.openReports}</div></div>
-        <div style={styles.card}><div style={{ color: '#6b7280' }}>Total requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.requests}</div></div>
-        <div style={styles.card}><div style={{ color: '#6b7280' }}>Pending requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.pendingRequests}</div></div>
+      <div style={S.row}>
+        <div style={S.box}><div style={{ color: '#6b7280' }}>Total reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.reports}</div></div>
+        <div style={S.box}><div style={{ color: '#6b7280' }}>Open reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.openReports}</div></div>
+        <div style={S.box}><div style={{ color: '#6b7280' }}>Total requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.requests}</div></div>
+        <div style={S.box}><div style={{ color: '#6b7280' }}>Pending requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.pendingRequests}</div></div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 18 }}>
-        <div style={styles.panel}>
+        <div style={S.panel}>
           <h2 style={{ marginTop: 0 }}>Reports</h2>
-          <div style={styles.list}>
-            {reports.length === 0 ? (
-              <div style={{ padding: 14, color: '#6b7280' }}>No reports yet.</div>
-            ) : reports.map(r => (
+          <div style={S.list}>
+            {reports.length === 0 ? <div style={{ padding: 14, color: '#6b7280' }}>No reports yet.</div> : reports.map(r => (
               <button
                 key={r.id}
                 onClick={() => setSelectedReportId(r.id)}
@@ -386,19 +373,15 @@ export default function AdminPage() {
                     {r.status || 'open'}
                   </span>
                 </div>
-                <div style={{ fontSize: 13, color: '#6b7280', marginTop: 6 }}>
-                  {(r.selectedReasons || []).slice(0, 2).join(' • ') || 'No preset reason'}
-                </div>
+                <div style={{ fontSize: 13, color: '#6b7280', marginTop: 6 }}>{(r.selectedReasons || []).slice(0, 2).join(' • ') || 'No preset reason'}</div>
                 <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>{fmt(r.createdAt)}</div>
               </button>
             ))}
           </div>
         </div>
 
-        <div style={styles.panel}>
-          {!selectedReport ? (
-            <div style={{ color: '#6b7280' }}>Select a report.</div>
-          ) : (
+        <div style={S.panel}>
+          {!selectedReport ? <div style={{ color: '#6b7280' }}>Select a report.</div> : (
             <>
               <h2 style={{ marginTop: 0 }}>{selectedReport.reportedName || 'Reported user'}</h2>
               <div style={{ color: '#6b7280' }}>Session: {selectedReport.sessionId || '—'}</div>
@@ -406,8 +389,8 @@ export default function AdminPage() {
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Reasons</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {(selectedReport.selectedReasons || []).length > 0
-                    ? selectedReport.selectedReasons.map(x => <span key={x} style={styles.chip}>{x}</span>)
+                  {(selectedReport.selectedReasons || []).length
+                    ? selectedReport.selectedReasons.map(x => <span key={x} style={S.chip}>{x}</span>)
                     : <span style={{ color: '#6b7280' }}>No preset reasons.</span>}
                 </div>
               </div>
@@ -434,7 +417,7 @@ export default function AdminPage() {
 
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Admin note</div>
-                <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Optional note" style={styles.textarea} />
+                <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Optional note" style={S.ta} />
               </div>
 
               {selectedUser && (
@@ -444,10 +427,10 @@ export default function AdminPage() {
                 </div>
               )}
 
-              <div style={styles.row}>
-                <button onClick={declineReport} disabled={busy} style={styles.gray}>Decline</button>
-                <button onClick={warnUser} disabled={busy} style={styles.warn}>Send warning</button>
-                <button onClick={banUser} disabled={busy} style={styles.ban}>Ban user</button>
+              <div style={S.row}>
+                <button onClick={declineReport} disabled={busy} style={S.gray}>Decline</button>
+                <button onClick={warnUser} disabled={busy} style={S.warn}>Send warning</button>
+                <button onClick={banUser} disabled={busy} style={S.ban}>Ban user</button>
                 <div style={{ alignSelf: 'center', color: '#2563eb', fontWeight: 600 }}>{msg}</div>
               </div>
             </>
@@ -456,12 +439,10 @@ export default function AdminPage() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 18 }}>
-        <div style={styles.panel}>
+        <div style={S.panel}>
           <h2 style={{ marginTop: 0 }}>Subscription requests</h2>
-          <div style={styles.list}>
-            {requests.length === 0 ? (
-              <div style={{ padding: 14, color: '#6b7280' }}>No subscription requests yet.</div>
-            ) : requests.map(r => (
+          <div style={S.list}>
+            {requests.length === 0 ? <div style={{ padding: 14, color: '#6b7280' }}>No subscription requests yet.</div> : requests.map(r => (
               <button
                 key={r.id}
                 onClick={() => setSelectedRequestId(r.id)}
@@ -489,12 +470,13 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <div style={styles.panel}>
-          {!selectedRequest ? (
-            <div style={{ color: '#6b7280' }}>Select a request.</div>
-          ) : (
+        <div style={S.panel}>
+          {!selectedRequest ? <div style={{ color: '#6b7280' }}>Select a request.</div> : (
             <>
               <h2 style={{ marginTop: 0 }}>{selectedRequest.name || 'Anonymous'}</h2>
               <div style={{ color: '#6b7280' }}>{selectedRequest.email || '—'}</div>
               <div style={{ marginTop: 12 }}>
-                <div><strong>Plan:</strong> {se
+                <div><strong>Plan:</strong> {selectedRequest.planLabel || selectedRequest.planId || '—'}</div>
+                <div style={{ marginTop: 6 }}><strong>UTR:</strong> {selectedRequest.utr || '—'}</div>
+                <div style={{ marginTop: 6 }}><strong>Amount:</strong> ₹{selectedRequest.amount ?? '—'}</div>
+                <div style={{ marginTop: 6 }}><strong>Status:</strong> {selectedRequest.status || '
