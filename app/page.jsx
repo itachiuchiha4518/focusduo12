@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation'
 import { auth, googleProvider } from '../lib/firebase'
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
 
+const ADMIN_UID = 'NIsbHB9RmXgR5vJEyv8CuV0ggD03'
+
 export default function HomePage() {
   const router = useRouter()
   const [user, setUser] = useState(null)
@@ -55,6 +57,8 @@ export default function HomePage() {
     }
   }
 
+  const isAdmin = user?.uid === ADMIN_UID
+
   return (
     <div style={page}>
       <div style={shell}>
@@ -67,7 +71,7 @@ export default function HomePage() {
           <div style={navRow}>
             <Link href="/plans" style={navLink}>Plans</Link>
             <Link href="/dashboard" style={navLink}>Dashboard</Link>
-            <Link href="/admin" style={navLink}>Admin</Link>
+            {isAdmin && <Link href="/admin" style={navLink}>Admin</Link>}
             {user ? (
               <>
                 <div style={userPill}>{user.displayName || user.email || 'Student'}</div>
@@ -82,24 +86,16 @@ export default function HomePage() {
         <main style={heroGrid}>
           <section style={heroCard}>
             <div style={badge}>Built for JEE and NEET students</div>
-            <h1 style={heroTitle}>
-              Study sessions that actually keep people focused.
-            </h1>
+            <h1 style={heroTitle}>Study sessions that actually keep people focused.</h1>
             <p style={heroText}>
               Join the right subject, get matched fast, video call inside the site, chat during the session,
               report bad behavior, and upgrade when you are ready.
             </p>
 
             <div style={ctaRow}>
-              <button onClick={getStarted} disabled={loading} style={buttonPrimary}>
-                Get started
-              </button>
-              <Link href="/plans" style={buttonSecondary}>
-                View plans
-              </Link>
-              <Link href="/dashboard" style={buttonSecondary}>
-                Open dashboard
-              </Link>
+              <button onClick={getStarted} disabled={loading} style={buttonPrimary}>Get started</button>
+              <Link href="/plans" style={buttonSecondary}>View plans</Link>
+              <Link href="/dashboard" style={buttonSecondary}>Open dashboard</Link>
             </div>
 
             <div style={statsGrid}>
@@ -149,9 +145,7 @@ export default function HomePage() {
               <div style={upgradeText}>
                 Open plans, pay by QR, submit UTR, and wait for admin approval.
               </div>
-              <Link href="/plans" style={buttonBlueBlock}>
-                Go to plans
-              </Link>
+              <Link href="/plans" style={buttonBlueBlock}>Go to plans</Link>
             </div>
           </aside>
         </main>
@@ -180,10 +174,12 @@ export default function HomePage() {
               <div style={quickText}>Choose free or upgrade.</div>
             </Link>
 
-            <Link href="/admin" style={quickCard}>
-              <div style={quickTitle}>Admin panel</div>
-              <div style={quickText}>Review reports and requests.</div>
-            </Link>
+            {isAdmin && (
+              <Link href="/admin" style={quickCard}>
+                <div style={quickTitle}>Admin panel</div>
+                <div style={quickText}>Review reports and requests.</div>
+              </Link>
+            )}
           </div>
         </section>
       </div>
