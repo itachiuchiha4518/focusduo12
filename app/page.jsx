@@ -1,129 +1,295 @@
-// app/page.jsx
-import Link from 'next/link'
-import React from 'react'
-import './globals.css'
+'use client'
 
-export default function Landing() {
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { auth, googleProvider } from '../lib/firebase'
+import { signInWithPopup, signOut } from 'firebase/auth'
+
+export default function HomePage() {
+  const router = useRouter()
+  const [user, setUser] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged(u => {
+      setUser(u || null)
+    })
+    return () => unsub()
+  }, [])
+
+  async function handleGoogleAuth() {
+    setLoading(true)
+    try {
+      await signInWithPopup(auth, googleProvider)
+    } catch (err) {
+      console.error(err)
+      alert('Google sign in failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleLogout() {
+    setLoading(true)
+    try {
+      await signOut(auth)
+    } catch (err) {
+      console.error(err)
+      alert('Logout failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleGetStarted() {
+    if (!auth.currentUser) {
+      try {
+        setLoading(true)
+        await signInWithPopup(auth, googleProvider)
+      } catch (err) {
+        console.error(err)
+        alert('Google sign in failed')
+        setLoading(false)
+        return
+      }
+    }
+    setLoading(false)
+    router.push('/join')
+  }
+
   return (
-    <div className="container">
-      <nav className="nav" aria-label="main">
-        <a className="brand" href="/">
-          <div className="logo" aria-hidden="true">FD</div>
+    <div style={{ minHeight: '100vh', background: '#0f172a', color: '#e2e8f0' }}>
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: '28px 20px' }}>
+        <header
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 16,
+            flexWrap: 'wrap',
+            marginBottom: 40
+          }}
+        >
           <div>
-            <div style={{fontWeight:800, color:'#fff'}}>FocusDuo</div>
-            <div style={{fontSize:12, color:'var(--muted)'}}>Study together. Stay consistent.</div>
-          </div>
-        </a>
-
-        <div className="nav-links">
-          <a href="/join">Join</a>
-          <a href="/dashboard">Dashboard</a>
-          <a href="#features">Features</a>
-          <a className="cta-small" href="/join">Get started</a>
-        </div>
-      </nav>
-
-      <header className="hero">
-        <div>
-          <div className="kicker">For JEE &amp; NEET students</div>
-          <h1 className="h-title">Study with accountability — focus in sessions that actually work.</h1>
-          <p className="h-sub">
-            Structured, distraction-free study sessions with live social accountability, streaks and progress tracking.
-            Match instantly with peers in the same exam & subject — start studying now.
-          </p>
-
-          <div className="h-cta" role="region" aria-label="calls to action">
-            <Link href="/join"><button className="btn-primary">Start studying — join session</button></Link>
-            <a href="/dashboard"><button className="btn-ghost">Open dashboard</button></a>
-          </div>
-
-          <div style={{marginTop:18, display:'flex', gap:12, alignItems:'center'}}>
-            <div style={{display:'flex', gap:8}}>
-              <div style={{fontSize:14, fontWeight:700}}>🔥 Current streak</div>
-              <div style={{color:'var(--muted)', fontSize:14}}>Visible progress • Levels • Badges</div>
+            <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.03em' }}>
+              FocusDuo
+            </div>
+            <div style={{ color: '#94a3b8', marginTop: 4 }}>
+              Study together. Stay accountable.
             </div>
           </div>
-        </div>
 
-        <div className="mockup" aria-hidden="true">
-          <div className="study-card card-1">
-            <div className="card-title">60 min Pomodoro</div>
-            <div className="card-sub">Physics — Problem set</div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            {user ? (
+              <>
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 999,
+                    background: 'rgba(255,255,255,0.06)',
+                    border: '1px solid rgba(148,163,184,0.18)'
+                  }}
+                >
+                  Signed in as {user.displayName || user.email}
+                </div>
+                <button
+                  onClick={handleLogout}
+                  disabled={loading}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 10,
+                    border: 'none',
+                    background: '#f43f5e',
+                    color: '#fff',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Log out
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleGoogleAuth}
+                disabled={loading}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: 10,
+                  border: 'none',
+                  background: '#2563eb',
+                  color: '#fff',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Sign up / Login with Google
+              </button>
+            )}
           </div>
+        </header>
 
-          <div className="study-card card-2">
-            <div className="card-title">Group session</div>
-            <div className="card-sub">Max 5 students • Calm mode</div>
-          </div>
-
-          <div className="study-card card-3">
-            <div className="card-title">1-on-1 match</div>
-            <div className="card-sub">Same exam • Same subject</div>
-          </div>
-
-          <div className="mock-screen" role="img" aria-label="live study preview">
-            <div style={{display:'flex', alignItems:'center', gap:12}}>
-              <div style={{width:64, height:64, borderRadius:10, background:'linear-gradient(90deg,#8e7bff,#5bd6ff)', display:'grid', placeItems:'center', fontWeight:800}}>JD</div>
-              <div style={{textAlign:'left'}}>
-                <div style={{fontWeight:700}}>Joined: Riya</div>
-                <div style={{color:'var(--muted)', fontSize:13}}>Physics • 60m</div>
-              </div>
+        <main
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1.2fr 0.8fr',
+            gap: 24,
+            alignItems: 'center'
+          }}
+        >
+          <section
+            style={{
+              padding: 24,
+              borderRadius: 20,
+              background:
+                'linear-gradient(180deg, rgba(37,99,235,0.16), rgba(15,23,42,0.92))',
+              border: '1px solid rgba(148,163,184,0.16)',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.25)'
+            }}
+          >
+            <div
+              style={{
+                display: 'inline-block',
+                padding: '6px 10px',
+                borderRadius: 999,
+                background: 'rgba(255,255,255,0.08)',
+                border: '1px solid rgba(148,163,184,0.16)',
+                color: '#cbd5e1',
+                fontSize: 13,
+                marginBottom: 16
+              }}
+            >
+              For JEE & NEET students
             </div>
 
-            <div style={{height:10}} />
+            <h1
+              style={{
+                margin: 0,
+                fontSize: 'clamp(34px, 5vw, 60px)',
+                lineHeight: 1.02,
+                letterSpacing: '-0.04em'
+              }}
+            >
+              Study with accountability that actually keeps people focused.
+            </h1>
 
-            <div className="mock-timer">
-              <div className="pulse" aria-hidden="true"></div>
-              <div style={{fontWeight:800}}>00:31:12</div>
-              <div style={{color:'var(--muted)'}}> • Focus mode</div>
+            <p style={{ color: '#94a3b8', fontSize: 18, lineHeight: 1.7, marginTop: 16 }}>
+              Join 1-on-1 or group sessions, match with the right subject and exam, track your progress,
+              and keep the session moving without distractions.
+            </p>
+
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 22 }}>
+              <button
+                onClick={handleGetStarted}
+                disabled={loading}
+                style={{
+                  padding: '12px 18px',
+                  borderRadius: 12,
+                  border: 'none',
+                  background: 'linear-gradient(90deg, #2563eb, #7c3aed)',
+                  color: '#fff',
+                  fontWeight: 800,
+                  cursor: 'pointer'
+                }}
+              >
+                Get started
+              </button>
+
+              <button
+                onClick={() => router.push('/join')}
+                disabled={loading}
+                style={{
+                  padding: '12px 18px',
+                  borderRadius: 12,
+                  border: '1px solid rgba(148,163,184,0.22)',
+                  background: 'rgba(255,255,255,0.04)',
+                  color: '#e2e8f0',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Go to matchmaking
+              </button>
             </div>
-          </div>
-        </div>
-      </header>
+          </section>
 
-      <section id="features" style={{marginTop:40}}>
-        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-          <h3 style={{margin:0}}>Why FocusDuo</h3>
-          <div style={{color:'var(--muted)'}}>Built for exam study — minimal, reliable, focused.</div>
-        </div>
+          <aside
+            style={{
+              padding: 20,
+              borderRadius: 20,
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(148,163,184,0.16)',
+              minHeight: 320
+            }}
+          >
+            <div style={{ fontSize: 14, color: '#94a3b8', marginBottom: 10 }}>
+              Account
+            </div>
 
-        <div className="features" style={{marginTop:18}}>
-          <div className="feature">
-            <h4>Instant matchmaking</h4>
-            <p>Same exam, same subject — matched in seconds. Deterministic queues, no random pairing.</p>
-          </div>
-          <div className="feature">
-            <h4>Distraction-free sessions</h4>
-            <p>Minimal UI, visible timer, and camera/mic controls so students focus, not scroll.</p>
-          </div>
-          <div className="feature">
-            <h4>Progress & retention</h4>
-            <p>Streaks, total hours, levels — all visible to encourage consistent daily study.</p>
-          </div>
-        </div>
-      </section>
+            <div
+              style={{
+                padding: 16,
+                borderRadius: 14,
+                background: 'rgba(15,23,42,0.8)',
+                border: '1px solid rgba(148,163,184,0.14)'
+              }}
+            >
+              {user ? (
+                <>
+                  <div style={{ fontWeight: 800, fontSize: 18 }}>
+                    {user.displayName || 'Student'}
+                  </div>
+                  <div style={{ color: '#94a3b8', marginTop: 6 }}>{user.email}</div>
+                  <div style={{ marginTop: 12, color: '#cbd5e1', lineHeight: 1.6 }}>
+                    Your account is ready. Go to matchmaking and enter your exam and subject.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontWeight: 800, fontSize: 18 }}>Not signed in</div>
+                  <div style={{ color: '#94a3b8', marginTop: 6, lineHeight: 1.6 }}>
+                    Sign in here first, or tap Get started and we will sign you in before sending you to matchmaking.
+                  </div>
+                  <button
+                    onClick={handleGoogleAuth}
+                    disabled={loading}
+                    style={{
+                      marginTop: 16,
+                      padding: '12px 16px',
+                      borderRadius: 12,
+                      border: 'none',
+                      background: '#2563eb',
+                      color: '#fff',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      width: '100%'
+                    }}
+                  >
+                    Sign up / Login
+                  </button>
+                </>
+              )}
+            </div>
 
-      <section style={{marginTop:40}}>
-        <div className="card" style={{display:'flex', gap:20, alignItems:'center', justifyContent:'space-between'}}>
-          <div>
-            <div style={{fontWeight:800, fontSize:20}}>Ready to stop procrastinating?</div>
-            <div style={{color:'var(--muted)'}}>Join a session now and start building momentum.</div>
-          </div>
-
-          <div style={{display:'flex', gap:10}}>
-            <Link href="/join"><button className="btn-primary">Join a session — free</button></Link>
-            <a href="/dashboard"><button className="btn-ghost">Explore dashboard</button></a>
-          </div>
-        </div>
-      </section>
-
-      <footer className="footer" style={{marginTop:40}}>
-        <div className="copy">© {new Date().getFullYear()} FocusDuo — Built for focus</div>
-        <div style={{display:'flex', gap:12}}>
-          <a href="#" style={{color:'var(--muted)'}}>Privacy</a>
-          <a href="#" style={{color:'var(--muted)'}}>Terms</a>
-        </div>
-      </footer>
+            <div
+              style={{
+                marginTop: 16,
+                padding: 16,
+                borderRadius: 14,
+                background: 'rgba(15,23,42,0.8)',
+                border: '1px solid rgba(148,163,184,0.14)',
+                lineHeight: 1.7,
+                color: '#cbd5e1'
+              }}
+            >
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>What you can do</div>
+              <div>• Join 1-on-1 or group sessions</div>
+              <div>• See live study progress</div>
+              <div>• Chat inside the session</div>
+              <div>• Report abusive users</div>
+            </div>
+          </aside>
+        </main>
+      </div>
     </div>
   )
 }
