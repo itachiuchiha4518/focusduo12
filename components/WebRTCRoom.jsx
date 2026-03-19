@@ -1,18 +1,23 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  addDoc,
-  collection,
-  doc,
-  getDoc,
-  onSnapshot,
-  serverTimestamp,
-  setDoc
-} from 'firebase/firestore'
+import { addDoc, collection, doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import Chat from './Chat'
 import EndCard from './EndCard'
+import {
+  consumeFreeCredit,
+  ensureUserProfile,
+  getEffectivePlanId,
+  remainingForMode
+} from '../lib/subscriptions'
+
+function formatClock(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds))
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`
+}
 
 export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const localVideoRef = useRef(null)
@@ -27,13 +32,21 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const connectedRef = useRef(false)
   const seenCandidatesRef = useRef(new Set())
 
+  const joinStartedAtRef = useRef(0)
+  const graceTimeoutRef = useRef(null)
+  const autoEndTimeoutRef = useRef(null)
+  const billingDoneRef = useRef(false)
+  const intervalRef = useRef(null)
+
   const [session, setSession] = useState(sessionProp || null)
+  const [profile, setProfile] = useState(null)
   const [status, setStatus] = useState('idle')
   const [joined, setJoined] = useState(false)
   const [micOn, setMicOn] = useState(true)
   const [camOn, setCamOn] = useState(true)
   const [cameraFacing, setCameraFacing] = useState('user')
   const [sessionEnded, setSessionEnded] = useState(false)
+  const [nowTick, setNowTick] = useState(Date.now())
 
   const partner = useMemo(() => {
     const selfUid = auth.currentUser?.uid
@@ -41,17 +54,34 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     return parts.find(p => p.uid !== selfUid) || null
   }, [session])
 
+  const effectivePlanId = getEffectivePlanId(profile)
+  const isFree = effectivePlanId === 'free'
+  const joinedSeconds = joined ? Math.floor((nowTick - joinStartedAtRef.current) / 1000) : 0
+  const graceLeft = isFree ? Math.max(0, 120 - joinedSeconds) : 0
+  const freeSessionLeft = isFree ? Math.max(0, 1800 - joinedSeconds) : 0
+
   useEffect(() => {
     let mounted = true
+
+    const unsubscribeAuth = auth.onAuthStateChanged(async u => {
+      if (!u) {
+        if (mounted) setProfile(null)
+        return
+      }
+      try {
+        const p = await ensureUserProfile(u)
+        if (mounted) setProfile(p)
+      } catch (err) {
+        console.warn(err)
+      }
+    })
 
     async function loadSession() {
       const snap = await getDoc(doc(db, 'sessions', sessionId))
       if (!mounted) return
       if (snap.exists()) {
         setSession({ id: snap.id, ...snap.data() })
-        if (snap.data()?.status === 'finished') {
-          setSessionEnded(true)
-        }
+        if (snap.data()?.status === 'finished') setSessionEnded(true)
       }
     }
 
@@ -64,9 +94,13 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       setSessionEnded(data.status === 'finished')
     })
 
+    intervalRef.current = setInterval(() => setNowTick(Date.now()), 1000)
+
     return () => {
       mounted = false
+      unsubscribeAuth()
       unsub()
+      if (intervalRef.current) clearInterval(intervalRef.current)
       cleanup()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -82,6 +116,15 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     candidatesUnsubRef.current = null
     connectedRef.current = false
     seenCandidatesRef.current = new Set()
+
+    if (graceTimeoutRef.current) {
+      clearTimeout(graceTimeoutRef.current)
+      graceTimeoutRef.current = null
+    }
+    if (autoEndTimeoutRef.current) {
+      clearTimeout(autoEndTimeoutRef.current)
+      autoEndTimeoutRef.current = null
+    }
 
     try {
       if (pcRef.current) {
@@ -118,9 +161,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   async function createLocalStream(facingMode = 'user') {
     return navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
-      video: {
-        facingMode: { ideal: facingMode }
-      }
+      video: { facingMode: { ideal: facingMode } }
     })
   }
 
@@ -151,6 +192,24 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       localVideoRef.current.srcObject = composed
       localVideoRef.current.muted = true
       await localVideoRef.current.play().catch(() => {})
+    }
+  }
+
+  async function finalizeFreeCreditIfNeeded() {
+    if (!isFree) return
+    if (billingDoneRef.current) return
+    if (!auth.currentUser) return
+    if (joinedSeconds < 120) return
+
+    try {
+      await consumeFreeCredit({
+        uid: auth.currentUser.uid,
+        mode: session?.mode || 'one-on-one',
+        sessionId
+      })
+      billingDoneRef.current = true
+    } catch (err) {
+      console.warn('free credit consume failed', err)
     }
   }
 
@@ -238,9 +297,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
           const data = snap.data()
           if (!data?.sdp) return
           try {
-            if (!pc.currentRemoteDescription) {
-              await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
-            }
+            await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
           } catch {}
         })
       } else {
@@ -249,17 +306,15 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
           const data = snap.data()
           if (!data?.sdp) return
           try {
-            if (!pc.currentRemoteDescription) {
-              await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp })
-              const answer = await pc.createAnswer()
-              await pc.setLocalDescription(answer)
-              await setDoc(answerRef, {
-                type: answer.type,
-                sdp: answer.sdp,
-                sender: selfUid,
-                createdAt: serverTimestamp()
-              })
-            }
+            await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp })
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            await setDoc(answerRef, {
+              type: answer.type,
+              sdp: answer.sdp,
+              sender: selfUid,
+              createdAt: serverTimestamp()
+            })
           } catch {}
         })
       }
@@ -272,6 +327,22 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
         if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
           setStatus(pc.connectionState)
         }
+      }
+
+      joinStartedAtRef.current = Date.now()
+      setNowTick(Date.now())
+
+      if (isFree) {
+        if (graceTimeoutRef.current) clearTimeout(graceTimeoutRef.current)
+        if (autoEndTimeoutRef.current) clearTimeout(autoEndTimeoutRef.current)
+
+        graceTimeoutRef.current = setTimeout(async () => {
+          await finalizeFreeCreditIfNeeded()
+        }, 120000)
+
+        autoEndTimeoutRef.current = setTimeout(async () => {
+          await endSession(true)
+        }, 1800000)
       }
 
       setJoined(true)
@@ -314,13 +385,20 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     }
   }
 
-  async function endSession() {
+  async function leaveSession() {
+    await finalizeFreeCreditIfNeeded()
+    await cleanup()
+  }
+
+  async function endSession(fromTimer = false) {
+    await finalizeFreeCreditIfNeeded()
     try {
       await setDoc(
         doc(db, 'sessions', sessionId),
         {
           status: 'finished',
-          endedAt: serverTimestamp()
+          endedAt: serverTimestamp(),
+          endedByTimer: !!fromTimer
         },
         { merge: true }
       )
@@ -381,7 +459,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
         {!joined ? (
           <button onClick={joinMeeting}>Join meeting</button>
         ) : (
-          <button onClick={cleanup}>Leave</button>
+          <button onClick={leaveSession}>Leave</button>
         )}
         <button onClick={endSession} style={{ background: '#ef4444', color: '#fff' }}>
           End session
@@ -390,6 +468,43 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
 
       <div style={{ marginTop: 10, color: '#cbd5e1' }}>
         <strong>Status:</strong> {status}
+      </div>
+
+      <div
+        style={{
+          marginTop: 14,
+          padding: 14,
+          borderRadius: 14,
+          background: 'rgba(15,23,42,0.95)',
+          border: '1px solid rgba(148,163,184,0.18)',
+          color: '#e2e8f0'
+        }}
+      >
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>
+          {isFree ? 'Free session timer' : 'Unlimited session timer'}
+        </div>
+
+        {isFree ? (
+          <>
+            <div style={{ marginBottom: 6 }}>
+              <strong>2-minute setup:</strong> {formatClock(graceLeft)}
+            </div>
+            <div style={{ color: '#cbd5e1', marginBottom: 10 }}>
+              Use these 2 minutes to choose the chapter. Leave now and your credit will not be used.
+            </div>
+
+            <div style={{ marginBottom: 6 }}>
+              <strong>30-minute session:</strong> {formatClock(freeSessionLeft)}
+            </div>
+            <div style={{ color: '#cbd5e1' }}>
+              When this timer ends, the session finishes automatically.
+            </div>
+          </>
+        ) : (
+          <div style={{ color: '#cbd5e1' }}>
+            Unlimited time. Stay as long as you want.
+          </div>
+        )}
       </div>
 
       {sessionEnded && (
