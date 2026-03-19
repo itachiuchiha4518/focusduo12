@@ -13,11 +13,11 @@ import {
   updateDoc
 } from 'firebase/firestore'
 import { auth, db, googleProvider } from '../../lib/firebase'
-import { PLAN_DEFS, getPlanDefinition, planEndsAtFromPlanId } from '../../lib/subscriptions'
+import { PLAN_DEFS, getPlanDefinition } from '../../lib/subscriptions'
 
 const ADMIN_UID = 'NIsbHB9RmXgR5vJEyv8CuV0ggD03'
 
-const S = {
+const ui = {
   page: { padding: 24, maxWidth: 1400, margin: '0 auto', fontFamily: 'system-ui, sans-serif' },
   row: { display: 'flex', gap: 12, flexWrap: 'wrap' },
   box: { border: '1px solid #e5e7eb', borderRadius: 14, background: '#fff', padding: 16 },
@@ -50,6 +50,12 @@ function fmt(v) {
     if (typeof v.seconds === 'number') return new Date(v.seconds * 1000).toLocaleString()
   } catch {}
   return '—'
+}
+
+function planExpiryForId(planId) {
+  const p = getPlanDefinition(planId)
+  const days = Number(p.durationDays || 0)
+  return days > 0 ? new Date(Date.now() + days * 24 * 60 * 60 * 1000) : null
 }
 
 export default function AdminPage() {
@@ -247,7 +253,7 @@ export default function AdminPage() {
       const plan = plans[planId] || getPlanDefinition(planId)
       const planRef = doc(db, 'plans', planId)
       const userRef = doc(db, 'users', selectedRequest.uid)
-      const expiry = planEndsAtFromPlanId(planId)
+      const expiry = planExpiryForId(planId)
 
       await runTransaction(db, async tx => {
         const reqSnap = await tx.get(reqRef)
@@ -324,48 +330,35 @@ export default function AdminPage() {
     pendingRequests: requests.filter(r => r.status === 'pending').length
   }), [reports, requests])
 
-  if (!user) {
-    return <div style={S.page}><h1>Admin Panel</h1><button onClick={login} style={S.blue}>Sign in with Google</button></div>
-  }
-
-  if (user.uid !== ADMIN_UID) {
-    return <div style={S.page}><h1>Admin Panel</h1><p>You are signed in but not authorized.</p><button onClick={logout} style={S.gray}>Sign out</button></div>
-  }
+  if (!user) return <div style={ui.page}><h1>Admin Panel</h1><button onClick={login} style={ui.blue}>Sign in with Google</button></div>
+  if (user.uid !== ADMIN_UID) return <div style={ui.page}><h1>Admin Panel</h1><p>You are signed in but not authorized.</p><button onClick={logout} style={ui.gray}>Sign out</button></div>
 
   return (
-    <div style={S.page}>
+    <div style={ui.page}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div>
           <h1 style={{ marginBottom: 6 }}>Admin Panel</h1>
           <div style={{ color: '#6b7280' }}>Reports, warnings, bans, subscription requests, and plan QR settings.</div>
         </div>
-        <button onClick={logout} style={S.gray}>Sign out</button>
+        <button onClick={logout} style={ui.gray}>Sign out</button>
       </div>
 
-      <div style={S.row}>
-        <div style={S.box}><div style={{ color: '#6b7280' }}>Total reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.reports}</div></div>
-        <div style={S.box}><div style={{ color: '#6b7280' }}>Open reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.openReports}</div></div>
-        <div style={S.box}><div style={{ color: '#6b7280' }}>Total requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.requests}</div></div>
-        <div style={S.box}><div style={{ color: '#6b7280' }}>Pending requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.pendingRequests}</div></div>
+      <div style={ui.row}>
+        <div style={ui.box}><div style={{ color: '#6b7280' }}>Total reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.reports}</div></div>
+        <div style={ui.box}><div style={{ color: '#6b7280' }}>Open reports</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.openReports}</div></div>
+        <div style={ui.box}><div style={{ color: '#6b7280' }}>Total requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.requests}</div></div>
+        <div style={ui.box}><div style={{ color: '#6b7280' }}>Pending requests</div><div style={{ fontSize: 28, fontWeight: 800 }}>{stats.pendingRequests}</div></div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 18 }}>
-        <div style={S.panel}>
+        <div style={ui.panel}>
           <h2 style={{ marginTop: 0 }}>Reports</h2>
-          <div style={S.list}>
+          <div style={ui.list}>
             {reports.length === 0 ? <div style={{ padding: 14, color: '#6b7280' }}>No reports yet.</div> : reports.map(r => (
               <button
                 key={r.id}
                 onClick={() => setSelectedReportId(r.id)}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: 14,
-                  border: 'none',
-                  borderBottom: '1px solid #e5e7eb',
-                  background: r.id === selectedReportId ? '#eff6ff' : '#fff',
-                  cursor: 'pointer'
-                }}
+                style={{ width: '100%', textAlign: 'left', padding: 14, border: 'none', borderBottom: '1px solid #e5e7eb', background: r.id === selectedReportId ? '#eff6ff' : '#fff', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                   <strong>{r.reportedName || 'Unknown user'}</strong>
@@ -380,7 +373,7 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <div style={S.panel}>
+        <div style={ui.panel}>
           {!selectedReport ? <div style={{ color: '#6b7280' }}>Select a report.</div> : (
             <>
               <h2 style={{ marginTop: 0 }}>{selectedReport.reportedName || 'Reported user'}</h2>
@@ -389,8 +382,8 @@ export default function AdminPage() {
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Reasons</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {(selectedReport.selectedReasons || []).length
-                    ? selectedReport.selectedReasons.map(x => <span key={x} style={S.chip}>{x}</span>)
+                  {(selectedReport.selectedReasons || []).length > 0
+                    ? selectedReport.selectedReasons.map(x => <span key={x} style={ui.chip}>{x}</span>)
                     : <span style={{ color: '#6b7280' }}>No preset reasons.</span>}
                 </div>
               </div>
@@ -402,13 +395,13 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
-                <div style={{ padding: 14, borderRadius: 12, border: '1px solid #e5e7eb', background: '#f9fafb' }}>
+              <div style={ui.row}>
+                <div style={{ padding: 14, borderRadius: 12, border: '1px solid #e5e7eb', background: '#f9fafb', flex: 1 }}>
                   <div style={{ color: '#6b7280', fontSize: 13 }}>Reporter</div>
                   <div style={{ fontWeight: 700 }}>{selectedReport.reporterName || 'Anonymous'}</div>
                   <div style={{ fontSize: 13, color: '#6b7280' }}>{selectedReport.reporterUid || '—'}</div>
                 </div>
-                <div style={{ padding: 14, borderRadius: 12, border: '1px solid #e5e7eb', background: '#f9fafb' }}>
+                <div style={{ padding: 14, borderRadius: 12, border: '1px solid #e5e7eb', background: '#f9fafb', flex: 1 }}>
                   <div style={{ color: '#6b7280', fontSize: 13 }}>Reported user</div>
                   <div style={{ fontWeight: 700 }}>{selectedReport.reportedName || 'Unknown'}</div>
                   <div style={{ fontSize: 13, color: '#6b7280' }}>{selectedReport.reportedUid || '—'}</div>
@@ -417,7 +410,7 @@ export default function AdminPage() {
 
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Admin note</div>
-                <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Optional note" style={S.ta} />
+                <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Optional note" style={ui.ta} />
               </div>
 
               {selectedUser && (
@@ -427,10 +420,10 @@ export default function AdminPage() {
                 </div>
               )}
 
-              <div style={S.row}>
-                <button onClick={declineReport} disabled={busy} style={S.gray}>Decline</button>
-                <button onClick={warnUser} disabled={busy} style={S.warn}>Send warning</button>
-                <button onClick={banUser} disabled={busy} style={S.ban}>Ban user</button>
+              <div style={ui.row}>
+                <button onClick={declineReport} disabled={busy} style={ui.gray}>Decline</button>
+                <button onClick={warnUser} disabled={busy} style={ui.warn}>Send warning</button>
+                <button onClick={banUser} disabled={busy} style={ui.ban}>Ban user</button>
                 <div style={{ alignSelf: 'center', color: '#2563eb', fontWeight: 600 }}>{msg}</div>
               </div>
             </>
@@ -439,22 +432,14 @@ export default function AdminPage() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 18 }}>
-        <div style={S.panel}>
+        <div style={ui.panel}>
           <h2 style={{ marginTop: 0 }}>Subscription requests</h2>
-          <div style={S.list}>
+          <div style={ui.list}>
             {requests.length === 0 ? <div style={{ padding: 14, color: '#6b7280' }}>No subscription requests yet.</div> : requests.map(r => (
               <button
                 key={r.id}
                 onClick={() => setSelectedRequestId(r.id)}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: 14,
-                  border: 'none',
-                  borderBottom: '1px solid #e5e7eb',
-                  background: r.id === selectedRequestId ? '#eff6ff' : '#fff',
-                  cursor: 'pointer'
-                }}
+                style={{ width: '100%', textAlign: 'left', padding: 14, border: 'none', borderBottom: '1px solid #e5e7eb', background: r.id === selectedRequestId ? '#eff6ff' : '#fff', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                   <strong>{r.name || 'Anonymous'}</strong>
@@ -470,7 +455,7 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <div style={S.panel}>
+        <div style={ui.panel}>
           {!selectedRequest ? <div style={{ color: '#6b7280' }}>Select a request.</div> : (
             <>
               <h2 style={{ marginTop: 0 }}>{selectedRequest.name || 'Anonymous'}</h2>
@@ -479,4 +464,8 @@ export default function AdminPage() {
                 <div><strong>Plan:</strong> {selectedRequest.planLabel || selectedRequest.planId || '—'}</div>
                 <div style={{ marginTop: 6 }}><strong>UTR:</strong> {selectedRequest.utr || '—'}</div>
                 <div style={{ marginTop: 6 }}><strong>Amount:</strong> ₹{selectedRequest.amount ?? '—'}</div>
-                <div style={{ marginTop: 6 }}><strong>Status:</strong> {selectedRequest.status || '
+                <div style={{ marginTop: 6 }}><strong>Status:</strong> {selectedRequest.status || 'pending'}</div>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Admin not
