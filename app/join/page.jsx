@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { auth, googleProvider, db } from '../../lib/firebase'
+import { auth, db, googleProvider } from '../../lib/firebase'
 import { signInWithPopup } from 'firebase/auth'
 import {
   collection,
@@ -15,11 +15,8 @@ import {
   setDoc,
   deleteDoc
 } from 'firebase/firestore'
-import {
-  ensureUserProfile,
-  getEffectivePlanId,
-  remainingForMode
-} from '../../lib/subscriptions'
+import { ensureUserProfile, getEffectivePlanId, remainingForMode } from '../../lib/subscriptions'
+import { getLiveHoursStatus, normalizeLiveHours } from '../../lib/liveHours'
 
 function clean(v = '') {
   return String(v).replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -37,12 +34,26 @@ export default function JoinPage() {
   const [mode, setMode] = useState('one-on-one')
   const [status, setStatus] = useState('idle')
   const [accountInfo, setAccountInfo] = useState(null)
+  const [liveHours, setLiveHours] = useState(null)
+  const [liveMessage, setLiveMessage] = useState('Loading live hours...')
 
   const myQueueRef = useRef(null)
   const queueListenerRef = useRef(null)
   const ownDocListenerRef = useRef(null)
   const matchingRef = useRef(false)
   const redirectedRef = useRef(false)
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'siteConfig', 'liveHours'), snap => {
+      const data = snap.exists() ? snap.data() : null
+      const normalized = normalizeLiveHours(data || undefined)
+      setLiveHours(normalized)
+      const liveStatus = getLiveHoursStatus(normalized)
+      setLiveMessage(liveStatus.message)
+    })
+
+    return () => unsub()
+  }, [])
 
   async function ensureLogin() {
     if (auth.currentUser) return auth.currentUser
@@ -166,6 +177,13 @@ export default function JoinPage() {
   }
 
   async function startMatchmaking() {
+    const liveStatus = getLiveHoursStatus(liveHours || {})
+    if (!liveStatus.open) {
+      alert(liveStatus.message || 'Live sessions are closed right now.')
+      setStatus('closed')
+      return
+    }
+
     setStatus('signing-in')
 
     let user
@@ -287,25 +305,18 @@ export default function JoinPage() {
     }
 
     window.addEventListener('beforeunload', onUnload)
-
     return () => {
       window.removeEventListener('beforeunload', onUnload)
-
-      if (queueListenerRef.current) {
-        queueListenerRef.current()
-        queueListenerRef.current = null
-      }
-
-      if (ownDocListenerRef.current) {
-        ownDocListenerRef.current()
-        ownDocListenerRef.current = null
-      }
-
-      if (myQueueRef.current) {
-        deleteDoc(myQueueRef.current).catch(() => {})
-      }
+      if (queueListenerRef.current) queueListenerRef.current()
+      if (ownDocListenerRef.current) ownDocListenerRef.current()
+      if (myQueueRef.current) deleteDoc(myQueueRef.current).catch(() => {})
     }
   }, [])
+
+  const liveStatus = getLiveHoursStatus(liveHours || {})
+  const availabilityText = liveHours
+    ? liveStatus.message
+    : 'Live hours are loading...'
 
   return (
     <div style={{ maxWidth: 900, margin: '32px auto', padding: 20 }}>
@@ -321,6 +332,10 @@ export default function JoinPage() {
           <div><strong>Free group left:</strong> {accountInfo.freeGroupRemaining ?? 10}</div>
         </div>
       )}
+
+      <div style={{ marginBottom: 16, padding: 14, borderRadius: 14, background: liveStatus.open ? '#ecfdf5' : '#fff7ed', border: '1px solid #e5e7eb' }}>
+        <strong>{liveStatus.label}:</strong> {availabilityText}
+      </div>
 
       <div style={{ display: 'grid', gap: 12, maxWidth: 480 }}>
         <label>
@@ -352,15 +367,15 @@ export default function JoinPage() {
         <div style={{ marginTop: 6 }}>
           <button
             onClick={startMatchmaking}
-            disabled={status === 'searching' || status === 'signing-in'}
+            disabled={status === 'searching' || status === 'signing-in' || !liveStatus.open}
             style={{
               padding: '10px 18px',
               fontWeight: 700,
-              background: '#2563eb',
+              background: liveStatus.open ? '#2563eb' : '#94a3b8',
               color: '#fff',
               border: 'none',
               borderRadius: 8,
-              cursor: 'pointer'
+              cursor: liveStatus.open ? 'pointer' : 'not-allowed'
             }}
           >
             Start matchmaking
@@ -392,4 +407,4 @@ export default function JoinPage() {
       </div>
     </div>
   )
-      }
+}
