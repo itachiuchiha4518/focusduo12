@@ -1,23 +1,19 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { addDoc, collection, doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore'
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  serverTimestamp,
+  setDoc
+} from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import Chat from './Chat'
 import EndCard from './EndCard'
-import {
-  consumeFreeCredit,
-  ensureUserProfile,
-  getEffectivePlanId,
-  remainingForMode
-} from '../lib/subscriptions'
-
-function formatClock(totalSeconds) {
-  const s = Math.max(0, Math.floor(totalSeconds))
-  const m = Math.floor(s / 60)
-  const r = s % 60
-  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`
-}
+import { ensureUserProfile, getEffectivePlanId } from '../lib/subscriptions'
 
 export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const localVideoRef = useRef(null)
@@ -29,14 +25,10 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const offerUnsubRef = useRef(null)
   const answerUnsubRef = useRef(null)
   const candidatesUnsubRef = useRef(null)
-  const connectedRef = useRef(false)
   const seenCandidatesRef = useRef(new Set())
-
-  const joinStartedAtRef = useRef(0)
-  const graceTimeoutRef = useRef(null)
-  const autoEndTimeoutRef = useRef(null)
-  const billingDoneRef = useRef(false)
-  const intervalRef = useRef(null)
+  const timerRef = useRef(null)
+  const graceTimerRef = useRef(null)
+  const autoEndTimerRef = useRef(null)
 
   const [session, setSession] = useState(sessionProp || null)
   const [profile, setProfile] = useState(null)
@@ -46,7 +38,10 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const [camOn, setCamOn] = useState(true)
   const [cameraFacing, setCameraFacing] = useState('user')
   const [sessionEnded, setSessionEnded] = useState(false)
-  const [nowTick, setNowTick] = useState(Date.now())
+  const [showEndCard, setShowEndCard] = useState(false)
+  const [tick, setTick] = useState(Date.now())
+  const [joinedAt, setJoinedAt] = useState(0)
+  const [creditConsumed, setCreditConsumed] = useState(false)
 
   const partner = useMemo(() => {
     const selfUid = auth.currentUser?.uid
@@ -54,16 +49,15 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     return parts.find(p => p.uid !== selfUid) || null
   }, [session])
 
-  const effectivePlanId = getEffectivePlanId(profile)
-  const isFree = effectivePlanId === 'free'
-  const joinedSeconds = joined ? Math.floor((nowTick - joinStartedAtRef.current) / 1000) : 0
-  const graceLeft = isFree ? Math.max(0, 120 - joinedSeconds) : 0
-  const freeSessionLeft = isFree ? Math.max(0, 1800 - joinedSeconds) : 0
+  const isFree = getEffectivePlanId(profile) === 'free'
+  const elapsed = joinedAt ? Math.floor((tick - joinedAt) / 1000) : 0
+  const graceLeft = Math.max(0, 120 - elapsed)
+  const freeLeft = Math.max(0, 1800 - elapsed)
 
   useEffect(() => {
     let mounted = true
 
-    const unsubscribeAuth = auth.onAuthStateChanged(async u => {
+    const unsubAuth = auth.onAuthStateChanged(async u => {
       if (!u) {
         if (mounted) setProfile(null)
         return
@@ -71,39 +65,31 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       try {
         const p = await ensureUserProfile(u)
         if (mounted) setProfile(p)
-      } catch (err) {
-        console.warn(err)
+      } catch (e) {
+        console.warn(e)
       }
     })
 
-    async function loadSession() {
-      const snap = await getDoc(doc(db, 'sessions', sessionId))
-      if (!mounted) return
-      if (snap.exists()) {
-        setSession({ id: snap.id, ...snap.data() })
-        if (snap.data()?.status === 'finished') setSessionEnded(true)
-      }
-    }
-
-    loadSession()
-
-    const unsub = onSnapshot(doc(db, 'sessions', sessionId), snap => {
+    const ref = doc(db, 'sessions', sessionId)
+    const unsub = onSnapshot(ref, snap => {
       if (!snap.exists()) return
       const data = { id: snap.id, ...snap.data() }
       setSession(data)
-      setSessionEnded(data.status === 'finished')
+      if (data.status === 'finished') {
+        setSessionEnded(true)
+        setShowEndCard(true)
+      }
     })
 
-    intervalRef.current = setInterval(() => setNowTick(Date.now()), 1000)
+    timerRef.current = setInterval(() => setTick(Date.now()), 1000)
 
     return () => {
       mounted = false
-      unsubscribeAuth()
+      unsubAuth()
       unsub()
-      if (intervalRef.current) clearInterval(intervalRef.current)
+      if (timerRef.current) clearInterval(timerRef.current)
       cleanup()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
   async function cleanup() {
@@ -114,17 +100,10 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     offerUnsubRef.current = null
     answerUnsubRef.current = null
     candidatesUnsubRef.current = null
-    connectedRef.current = false
     seenCandidatesRef.current = new Set()
 
-    if (graceTimeoutRef.current) {
-      clearTimeout(graceTimeoutRef.current)
-      graceTimeoutRef.current = null
-    }
-    if (autoEndTimeoutRef.current) {
-      clearTimeout(autoEndTimeoutRef.current)
-      autoEndTimeoutRef.current = null
-    }
+    if (graceTimerRef.current) clearTimeout(graceTimerRef.current)
+    if (autoEndTimerRef.current) clearTimeout(autoEndTimerRef.current)
 
     try {
       if (pcRef.current) {
@@ -172,44 +151,37 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     await localVideoRef.current.play().catch(() => {})
   }
 
-  async function replaceCameraTrack(newVideoTrack) {
+  async function replaceCameraTrack(newTrack) {
     const pc = pcRef.current
-    if (!pc || !newVideoTrack) return
+    if (!pc || !newTrack) return
 
-    const videoSender = pc.getSenders().find(s => s.track && s.track.kind === 'video')
-    if (videoSender) {
-      await videoSender.replaceTrack(newVideoTrack)
-    }
+    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video')
+    if (sender) await sender.replaceTrack(newTrack)
 
     const audioTracks = localStreamRef.current?.getAudioTracks?.() || []
-    const currentVideoTracks = localStreamRef.current?.getVideoTracks?.() || []
-    currentVideoTracks.forEach(t => t.stop())
+    const videoTracks = localStreamRef.current?.getVideoTracks?.() || []
+    videoTracks.forEach(t => t.stop())
 
-    const composed = new MediaStream([...audioTracks, newVideoTrack])
-    localStreamRef.current = composed
-
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = composed
-      localVideoRef.current.muted = true
-      await localVideoRef.current.play().catch(() => {})
-    }
+    const newStream = new MediaStream([...audioTracks, newTrack])
+    localStreamRef.current = newStream
+    await attachLocalPreview(newStream)
   }
 
-  async function finalizeFreeCreditIfNeeded() {
-    if (!isFree) return
-    if (billingDoneRef.current) return
-    if (!auth.currentUser) return
-    if (joinedSeconds < 120) return
+  async function maybeConsumeCredit() {
+    if (!isFree || creditConsumed || !auth.currentUser) return
+    if (elapsed < 120) return
 
     try {
-      await consumeFreeCredit({
+      const billingRef = doc(db, 'sessions', sessionId, 'billing', auth.currentUser.uid)
+      await setDoc(billingRef, {
         uid: auth.currentUser.uid,
-        mode: session?.mode || 'one-on-one',
-        sessionId
-      })
-      billingDoneRef.current = true
-    } catch (err) {
-      console.warn('free credit consume failed', err)
+        sessionId,
+        charged: true,
+        createdAt: serverTimestamp()
+      }, { merge: true })
+      setCreditConsumed(true)
+    } catch (e) {
+      console.warn(e)
     }
   }
 
@@ -223,7 +195,6 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
 
     try {
       setStatus('getting-media')
-
       const stream = await createLocalStream(cameraFacing)
       localStreamRef.current = stream
       await attachLocalPreview(stream)
@@ -238,17 +209,15 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream
 
       pc.ontrack = event => {
-        const [streamFromPeer] = event.streams
-        if (streamFromPeer) {
-          streamFromPeer.getTracks().forEach(track => {
+        const [peerStream] = event.streams
+        if (peerStream) {
+          peerStream.getTracks().forEach(track => {
             if (!remoteStream.getTracks().some(t => t.id === track.id)) {
               remoteStream.addTrack(track)
             }
           })
         }
-        setTimeout(() => {
-          remoteVideoRef.current?.play().catch(() => {})
-        }, 75)
+        setTimeout(() => remoteVideoRef.current?.play().catch(() => {}), 50)
       }
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream))
@@ -280,17 +249,14 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       })
 
       if (amInitiator) {
-        const existingOffer = await getDoc(offerRef)
-        if (!existingOffer.exists()) {
-          const offer = await pc.createOffer()
-          await pc.setLocalDescription(offer)
-          await setDoc(offerRef, {
-            type: offer.type,
-            sdp: offer.sdp,
-            sender: selfUid,
-            createdAt: serverTimestamp()
-          })
-        }
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        await setDoc(offerRef, {
+          type: offer.type,
+          sdp: offer.sdp,
+          sender: selfUid,
+          createdAt: serverTimestamp()
+        }, { merge: true })
 
         answerUnsubRef.current = onSnapshot(answerRef, async snap => {
           if (!snap.exists()) return
@@ -314,41 +280,32 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
               sdp: answer.sdp,
               sender: selfUid,
               createdAt: serverTimestamp()
-            })
+            }, { merge: true })
           } catch {}
         })
       }
 
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') {
-          connectedRef.current = true
-          setStatus('connected')
-        }
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-          setStatus(pc.connectionState)
-        }
-      }
-
-      joinStartedAtRef.current = Date.now()
-      setNowTick(Date.now())
-
-      if (isFree) {
-        if (graceTimeoutRef.current) clearTimeout(graceTimeoutRef.current)
-        if (autoEndTimeoutRef.current) clearTimeout(autoEndTimeoutRef.current)
-
-        graceTimeoutRef.current = setTimeout(async () => {
-          await finalizeFreeCreditIfNeeded()
-        }, 120000)
-
-        autoEndTimeoutRef.current = setTimeout(async () => {
-          await endSession(true)
-        }, 1800000)
+        if (pc.connectionState === 'connected') setStatus('connected')
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') setStatus(pc.connectionState)
       }
 
       setJoined(true)
-      setStatus('joined')
-    } catch (err) {
-      console.error(err)
+      setJoinedAt(Date.now())
+      setTick(Date.now())
+      setShowEndCard(false)
+
+      if (isFree) {
+        graceTimerRef.current = setTimeout(() => {
+          maybeConsumeCredit()
+        }, 120000)
+
+        autoEndTimerRef.current = setTimeout(async () => {
+          await endSession(true)
+        }, 1800000)
+      }
+    } catch (e) {
+      console.error(e)
       alert('Unable to start video. Check camera and mic permissions.')
       setStatus('error')
     }
@@ -369,165 +326,168 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   async function switchCamera() {
     const nextFacing = cameraFacing === 'user' ? 'environment' : 'user'
     try {
-      const newVideoStream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: nextFacing } },
         audio: false
       })
-
-      const newVideoTrack = newVideoStream.getVideoTracks()[0]
-      if (!newVideoTrack) return
-
-      await replaceCameraTrack(newVideoTrack)
+      const track = stream.getVideoTracks()[0]
+      if (!track) return
+      await replaceCameraTrack(track)
       setCameraFacing(nextFacing)
-    } catch (err) {
-      console.error(err)
+    } catch (e) {
+      console.error(e)
       alert('Could not switch camera on this device.')
     }
   }
 
   async function leaveSession() {
-    await finalizeFreeCreditIfNeeded()
+    setShowEndCard(true)
+    await maybeConsumeCredit()
     await cleanup()
   }
 
   async function endSession(fromTimer = false) {
-    await finalizeFreeCreditIfNeeded()
+    await maybeConsumeCredit()
     try {
-      await setDoc(
-        doc(db, 'sessions', sessionId),
-        {
-          status: 'finished',
-          endedAt: serverTimestamp(),
-          endedByTimer: !!fromTimer
-        },
-        { merge: true }
-      )
+      await setDoc(doc(db, 'sessions', sessionId), {
+        status: 'finished',
+        endedAt: serverTimestamp(),
+        endedByTimer: !!fromTimer
+      }, { merge: true })
     } catch {}
-
     setSessionEnded(true)
+    setShowEndCard(true)
     await cleanup()
   }
 
-  function startNewSession() {
-    window.location.href = '/join'
+  const sessionMeta = {
+    exam: session?.exam || null,
+    subject: session?.subject || null,
+    mode: session?.mode || null
   }
 
   return (
     <div style={{ padding: 14 }}>
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ minWidth: 180 }}>
-          <div style={{ fontWeight: 700, marginBottom: 6, color: '#e2e8f0' }}>You</div>
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{
-              width: '100%',
-              maxWidth: 280,
-              height: 240,
-              background: '#000',
-              borderRadius: 12,
-              objectFit: 'cover'
-            }}
-          />
-        </div>
+      {!showEndCard ? (
+        <>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 180 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6, color: '#e2e8f0' }}>You</div>
+              <video
+                ref={localVideoRef}
+                autoPlay
+                playsInline
+                muted
+                style={{
+                  width: '100%',
+                  maxWidth: 280,
+                  height: 240,
+                  background: '#000',
+                  borderRadius: 12,
+                  objectFit: 'cover'
+                }}
+              />
+            </div>
 
-        <div style={{ minWidth: 180, flex: 1 }}>
-          <div style={{ fontWeight: 700, marginBottom: 6, color: '#e2e8f0' }}>
-            Partner{partner?.name ? ` • ${partner.name}` : ''}
+            <div style={{ minWidth: 180, flex: 1 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6, color: '#e2e8f0' }}>
+                Partner{partner?.name ? ` • ${partner.name}` : ''}
+              </div>
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                style={{
+                  width: '100%',
+                  minHeight: 240,
+                  background: '#000',
+                  borderRadius: 12,
+                  objectFit: 'cover'
+                }}
+              />
+            </div>
           </div>
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            style={{
-              width: '100%',
-              minHeight: 240,
-              background: '#000',
-              borderRadius: 12,
-              objectFit: 'cover'
-            }}
-          />
-        </div>
-      </div>
 
-      <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button onClick={toggleMic}>{micOn ? 'Mic Off' : 'Mic On'}</button>
-        <button onClick={toggleCam}>{camOn ? 'Cam Off' : 'Cam On'}</button>
-        <button onClick={switchCamera}>Switch camera</button>
-        {!joined ? (
-          <button onClick={joinMeeting}>Join meeting</button>
-        ) : (
-          <button onClick={leaveSession}>Leave</button>
-        )}
-        <button onClick={endSession} style={{ background: '#ef4444', color: '#fff' }}>
-          End session
-        </button>
-      </div>
-
-      <div style={{ marginTop: 10, color: '#cbd5e1' }}>
-        <strong>Status:</strong> {status}
-      </div>
-
-      <div
-        style={{
-          marginTop: 14,
-          padding: 14,
-          borderRadius: 14,
-          background: 'rgba(15,23,42,0.95)',
-          border: '1px solid rgba(148,163,184,0.18)',
-          color: '#e2e8f0'
-        }}
-      >
-        <div style={{ fontWeight: 800, marginBottom: 8 }}>
-          {isFree ? 'Free session timer' : 'Unlimited session timer'}
-        </div>
-
-        {isFree ? (
-          <>
-            <div style={{ marginBottom: 6 }}>
-              <strong>2-minute setup:</strong> {formatClock(graceLeft)}
-            </div>
-            <div style={{ color: '#cbd5e1', marginBottom: 10 }}>
-              Use these 2 minutes to choose the chapter. Leave now and your credit will not be used.
-            </div>
-
-            <div style={{ marginBottom: 6 }}>
-              <strong>30-minute session:</strong> {formatClock(freeSessionLeft)}
-            </div>
-            <div style={{ color: '#cbd5e1' }}>
-              When this timer ends, the session finishes automatically.
-            </div>
-          </>
-        ) : (
-          <div style={{ color: '#cbd5e1' }}>
-            Unlimited time. Stay as long as you want.
+          <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={toggleMic}>{micOn ? 'Mic Off' : 'Mic On'}</button>
+            <button onClick={toggleCam}>{camOn ? 'Cam Off' : 'Cam On'}</button>
+            <button onClick={switchCamera}>Switch camera</button>
+            {!joined ? (
+              <button onClick={joinMeeting}>Join meeting</button>
+            ) : (
+              <button onClick={leaveSession}>Leave</button>
+            )}
+            <button onClick={() => endSession(false)} style={{ background: '#ef4444', color: '#fff' }}>
+              End session
+            </button>
           </div>
-        )}
-      </div>
 
-      {sessionEnded && (
-        <div
-          style={{
-            marginTop: 16,
-            padding: 16,
-            borderRadius: 14,
-            background: 'rgba(15,23,42,0.95)',
-            border: '1px solid rgba(148,163,184,0.22)',
-            color: '#e2e8f0'
+          <div style={{ marginTop: 10, color: '#cbd5e1' }}>
+            <strong>Status:</strong> {status}
+          </div>
+
+          <div
+            style={{
+              marginTop: 14,
+              padding: 14,
+              borderRadius: 14,
+              background: 'rgba(15,23,42,0.95)',
+              border: '1px solid rgba(148,163,184,0.18)',
+              color: '#e2e8f0'
+            }}
+          >
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>
+              {isFree ? 'Free session timer' : 'Unlimited session timer'}
+            </div>
+
+            {isFree ? (
+              <>
+                <div style={{ marginBottom: 6 }}>
+                  <strong>2-minute setup:</strong> {Math.max(0, graceLeft)}s
+                </div>
+                <div style={{ color: '#cbd5e1', marginBottom: 10 }}>
+                  Choose the chapter now. Leave within 2 minutes and your credit will not be used.
+                </div>
+
+                <div style={{ marginBottom: 6 }}>
+                  <strong>30-minute session:</strong> {Math.max(0, freeLeft)}s
+                </div>
+                <div style={{ color: '#cbd5e1' }}>
+                  When this timer ends, the session finishes automatically.
+                </div>
+              </>
+            ) : (
+              <div style={{ color: '#cbd5e1' }}>Unlimited time. Stay as long as you want.</div>
+            )}
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <Chat sessionId={sessionId} />
+          </div>
+        </>
+      ) : (
+        <EndCard
+          sessionId={sessionId}
+          partnerUid={partner?.uid || null}
+          partnerName={partner?.name || 'Partner'}
+          sessionMeta={sessionMeta}
+          onStartNew={() => {
+            window.location.href = '/join'
           }}
-        >
-          <h3 style={{ marginTop: 0 }}>Session ended</h3>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button onClick={startNewSession}>Start new session</button>
-          </div>
-        </div>
+        />
       )}
 
-      <div style={{ marginTop: 16 }}>
-        <Chat sessionId={sessionId} />
-      </div>
+      {sessionEnded && !showEndCard ? (
+        <EndCard
+          sessionId={sessionId}
+          partnerUid={partner?.uid || null}
+          partnerName={partner?.name || 'Partner'}
+          sessionMeta={sessionMeta}
+          onStartNew={() => {
+            window.location.href = '/join'
+          }}
+        />
+      ) : null}
     </div>
   )
-    }
+        }
