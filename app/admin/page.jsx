@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore'
 import { auth, db, googleProvider } from '../../lib/firebase'
 import { PLAN_DEFS, getPlanDefinition } from '../../lib/subscriptions'
+import { DEFAULT_LIVE_HOURS, normalizeLiveHours, getLiveHoursStatus } from '../../lib/liveHours'
 
 const ADMIN_UID = 'NIsbHB9RmXgR5vJEyv8CuV0ggD03'
 
@@ -66,6 +67,7 @@ export default function AdminPage() {
   const [reports, setReports] = useState([])
   const [requests, setRequests] = useState([])
   const [plans, setPlans] = useState(clonePlans())
+  const [liveHours, setLiveHours] = useState(DEFAULT_LIVE_HOURS)
   const [selectedReportId, setSelectedReportId] = useState(null)
   const [selectedRequestId, setSelectedRequestId] = useState(null)
   const [selectedUser, setSelectedUser] = useState(null)
@@ -107,23 +109,48 @@ export default function AdminPage() {
     return () => unsub()
   }, [])
 
-  const selectedReport = useMemo(() => reports.find(r => r.id === selectedReportId) || null, [reports, selectedReportId])
-  const selectedRequest = useMemo(() => requests.find(r => r.id === selectedRequestId) || null, [requests, selectedRequestId])
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'siteConfig', 'liveHours'), snap => {
+      if (!snap.exists()) {
+        setLiveHours(DEFAULT_LIVE_HOURS)
+        return
+      }
+      setLiveHours(normalizeLiveHours(snap.data()))
+    })
+    return () => unsub()
+  }, [])
+
+  const selectedReport = useMemo(
+    () => reports.find(r => r.id === selectedReportId) || null,
+    [reports, selectedReportId]
+  )
+
+  const selectedRequest = useMemo(
+    () => requests.find(r => r.id === selectedRequestId) || null,
+    [requests, selectedRequestId]
+  )
 
   useEffect(() => {
-    async function loadUser() {
+    async function loadUserMeta() {
       if (!selectedReport?.reportedUid) {
         setSelectedUser(null)
         return
       }
+
       const snap = await getDoc(doc(db, 'users', selectedReport.reportedUid))
       setSelectedUser(snap.exists() ? { id: snap.id, ...snap.data() } : { warningCount: 0, accountStatus: 'active' })
     }
-    loadUser()
+
+    loadUserMeta()
   }, [selectedReport?.reportedUid])
 
   async function login() {
-    await signInWithPopup(auth, googleProvider)
+    try {
+      await signInWithPopup(auth, googleProvider)
+    } catch (e) {
+      console.error(e)
+      alert('Admin sign in failed')
+    }
   }
 
   async function logout() {
@@ -261,6 +288,21 @@ export default function AdminPage() {
     reader.readAsDataURL(file)
   }
 
+  async function saveLiveHours() {
+    setBusy(true)
+    try {
+      await setDoc(doc(db, 'siteConfig', 'liveHours'), normalizeLiveHours(liveHours), { merge: true })
+      setMsg('Live hours saved.')
+    } catch (e) {
+      console.error(e)
+      alert('Failed to save live hours')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const liveStatus = getLiveHoursStatus(liveHours)
+
   async function grantPlan() {
     if (!selectedRequest) return
     setBusy(true)
@@ -364,14 +406,12 @@ export default function AdminPage() {
         <button onClick={logout} style={styles.gray}>Sign out</button>
       </div>
     )
-  }
-
-  return (
+        }return (
     <div style={styles.page}>
       <div style={styles.topRow}>
         <div>
           <h1 style={{ marginBottom: 6 }}>Admin Panel</h1>
-          <div style={{ color: '#6b7280' }}>Reports, warnings, bans, subscription requests, and plan QR settings.</div>
+          <div style={{ color: '#6b7280' }}>Reports, warnings, bans, subscription requests, QR uploads, and live hours.</div>
         </div>
         <button onClick={logout} style={styles.gray}>Sign out</button>
       </div>
@@ -631,6 +671,71 @@ export default function AdminPage() {
               </div>
             )
           })}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 18 }}>
+        <h2>Live hours</h2>
+        <div style={{ padding: 16, borderRadius: 14, border: '1px solid #e5e7eb', background: '#fff' }}>
+          <div style={{ marginBottom: 10 }}>
+            <strong>Status:</strong> {liveStatus.label} — {liveStatus.message}
+          </div>
+
+          <div style={styles.row}>
+            <button
+              onClick={() => setLiveHours(prev => ({ ...normalizeLiveHours(prev), is247: true }))}
+              style={liveHours.is247 ? styles.blue : styles.gray}
+            >
+              24/7 ON
+            </button>
+
+            <button
+              onClick={() => setLiveHours(prev => ({ ...normalizeLiveHours(prev), is247: false }))}
+              style={!liveHours.is247 ? styles.blue : styles.gray}
+            >
+              2 slots mode
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14, opacity: liveHours.is247 ? 0.55 : 1 }}>
+            {[0, 1].map(index => (
+              <div key={index} style={{ padding: 12, border: '1px solid #e5e7eb', borderRadius: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>Slot {index + 1}</div>
+                <label style={{ display: 'block', marginBottom: 8 }}>
+                  Start
+                  <input
+                    type="time"
+                    value={liveHours.slots?.[index]?.start || DEFAULT_LIVE_HOURS.slots[index].start}
+                    onChange={e => setLiveHours(prev => {
+                      const next = normalizeLiveHours(prev)
+                      next.slots[index].start = e.target.value
+                      return next
+                    })}
+                    disabled={liveHours.is247}
+                    style={styles.input}
+                  />
+                </label>
+                <label style={{ display: 'block' }}>
+                  End
+                  <input
+                    type="time"
+                    value={liveHours.slots?.[index]?.end || DEFAULT_LIVE_HOURS.slots[index].end}
+                    onChange={e => setLiveHours(prev => {
+                      const next = normalizeLiveHours(prev)
+                      next.slots[index].end = e.target.value
+                      return next
+                    })}
+                    disabled={liveHours.is247}
+                    style={styles.input}
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <button onClick={saveLiveHours} disabled={busy} style={styles.blue}>Save live hours</button>
+          </div>
         </div>
       </div>
     </div>
