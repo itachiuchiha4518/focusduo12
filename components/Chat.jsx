@@ -61,12 +61,7 @@ export default function Chat({ sessionId }) {
         createdAt: serverTimestamp()
       })
 
-      if (result.blocked) {
-        setInfo('Message was masked because it contained blocked language.')
-      } else {
-        setInfo('')
-      }
-
+      setInfo(result.blocked ? 'Message was masked because it contained blocked language.' : '')
       setValue('')
     } catch (e) {
       console.error(e)
@@ -84,57 +79,43 @@ export default function Chat({ sessionId }) {
   }
 
   return (
-    <div
-      style={{
-        border: '1px solid rgba(148,163,184,0.18)',
-        borderRadius: 16,
-        overflow: 'hidden',
-        background: '#0f172a',
-        color: '#e2e8f0'
-      }}
-    >
-      <div
-        style={{
-          padding: 12,
-          borderBottom: '1px solid rgba(148,163,184,0.14)',
-          fontWeight: 800
-        }}
-      >
+    <div style={{
+      border: '1px solid rgba(148,163,184,0.18)',
+      borderRadius: 16,
+      overflow: 'hidden',
+      background: '#0f172a',
+      color: '#e2e8f0'
+    }}>
+      <div style={{
+        padding: 12,
+        borderBottom: '1px solid rgba(148,163,184,0.14)',
+        fontWeight: 800
+      }}>
         Chat
       </div>
 
-      <div
-        style={{
-          maxHeight: 280,
-          overflowY: 'auto',
-          padding: 12,
-          display: 'grid',
-          gap: 10,
-          background: '#111827'
-        }}
-      >
+      <div style={{
+        maxHeight: 280,
+        overflowY: 'auto',
+        padding: 12,
+        display: 'grid',
+        gap: 10,
+        background: '#111827'
+      }}>
         {messages.length === 0 ? (
           <div style={{ color: '#94a3b8' }}>No messages yet.</div>
         ) : (
           messages.map(msg => {
             const mine = auth.currentUser?.uid === msg.uid
             return (
-              <div
-                key={msg.id}
-                style={{
-                  display: 'flex',
-                  justifyContent: mine ? 'flex-end' : 'flex-start'
-                }}
-              >
-                <div
-                  style={{
-                    maxWidth: '80%',
-                    padding: '10px 12px',
-                    borderRadius: 14,
-                    background: mine ? '#1d4ed8' : '#1f2937',
-                    border: '1px solid rgba(148,163,184,0.12)'
-                  }}
-                >
+              <div key={msg.id} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
+                <div style={{
+                  maxWidth: '80%',
+                  padding: '10px 12px',
+                  borderRadius: 14,
+                  background: mine ? '#1d4ed8' : '#1f2937',
+                  border: '1px solid rgba(148,163,184,0.12)'
+                }}>
                   <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
                     {msg.name || 'Anonymous'} • {stamp(msg.createdAt)}
                   </div>
@@ -147,13 +128,7 @@ export default function Chat({ sessionId }) {
         <div ref={bottomRef} />
       </div>
 
-      <div
-        style={{
-          padding: 12,
-          borderTop: '1px solid rgba(148,163,184,0.14)',
-          background: '#0f172a'
-        }}
-      >
+      <div style={{ padding: 12, borderTop: '1px solid rgba(148,163,184,0.14)', background: '#0f172a' }}>
         <textarea
           value={value}
           onChange={e => setValue(e.target.value)}
