@@ -7,13 +7,33 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
-  setDoc
+  setDoc,
+  updateDoc
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import Chat from './Chat'
 import EndCard from './EndCard'
-import { ensureUserProfile, getEffectivePlanId } from '../lib/subscriptions'
+import { consumeFreeCreditOnce, getFreeTimerState } from '../lib/sessionTiming'
+
+const DEFAULT_PROFILE = {
+  planId: 'free',
+  planLabel: 'Free',
+  planStatus: 'active',
+  accountStatus: 'active',
+  freeOneOnOneRemaining: 10,
+  freeGroupRemaining: 10,
+  sessionsCompleted: 0,
+  streakDays: 0
+}
+
+function getEffectivePlanId(profile) {
+  if (!profile) return 'free'
+  if (profile.accountStatus === 'banned') return 'banned'
+  if (profile.planStatus === 'active' && profile.planId) return profile.planId
+  return 'free'
+}
 
 export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const localVideoRef = useRef(null)
@@ -21,16 +41,15 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
   const remoteStreamRef = useRef(null)
-
   const offerUnsubRef = useRef(null)
   const answerUnsubRef = useRef(null)
   const candidatesUnsubRef = useRef(null)
   const seenCandidatesRef = useRef(new Set())
   const timerRef = useRef(null)
-  const graceTimerRef = useRef(null)
-  const autoEndTimerRef = useRef(null)
+  const graceAttemptRef = useRef(false)
+  const currentUidRef = useRef(null)
 
-  const [session, setSession] = useState(sessionProp || null)
+  const [sessionDoc, setSessionDoc] = useState(sessionProp || null)
   const [profile, setProfile] = useState(null)
   const [status, setStatus] = useState('idle')
   const [joined, setJoined] = useState(false)
@@ -40,70 +59,141 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const [sessionEnded, setSessionEnded] = useState(false)
   const [showEndCard, setShowEndCard] = useState(false)
   const [tick, setTick] = useState(Date.now())
-  const [joinedAt, setJoinedAt] = useState(0)
   const [creditConsumed, setCreditConsumed] = useState(false)
 
   const partner = useMemo(() => {
-    const selfUid = auth.currentUser?.uid
-    const parts = session?.participants || []
+    const selfUid = currentUidRef.current
+    const parts = sessionDoc?.participants || []
     return parts.find(p => p.uid !== selfUid) || null
-  }, [session])
+  }, [sessionDoc])
 
-  const isFree = getEffectivePlanId(profile) === 'free'
-  const elapsed = joinedAt ? Math.floor((tick - joinedAt) / 1000) : 0
-  const graceLeft = Math.max(0, 120 - elapsed)
-  const freeLeft = Math.max(0, 1800 - elapsed)
+  const planId = getEffectivePlanId(profile)
+  const isFree = planId === 'free'
+  const timerState = isFree ? getFreeTimerState(sessionDoc) : null
 
   useEffect(() => {
-    let mounted = true
+    graceAttemptRef.current = false
+    setCreditConsumed(false)
+    setShowEndCard(false)
+    setSessionEnded(false)
+    setJoined(false)
+    setStatus('idle')
 
     const unsubAuth = auth.onAuthStateChanged(async u => {
+      currentUidRef.current = u?.uid || null
+
       if (!u) {
-        if (mounted) setProfile(null)
+        setProfile(null)
         return
       }
+
       try {
-        const p = await ensureUserProfile(u)
-        if (mounted) setProfile(p)
+        const ref = doc(db, 'users', u.uid)
+        const snap = await getDoc(ref)
+
+        if (!snap.exists()) {
+          const base = {
+            ...DEFAULT_PROFILE,
+            uid: u.uid,
+            name: u.displayName || '',
+            email: u.email || '',
+            updatedAt: serverTimestamp()
+          }
+          await setDoc(ref, base, { merge: true })
+          setProfile(base)
+          return
+        }
+
+        const data = { ...DEFAULT_PROFILE, id: snap.id, ...snap.data() }
+        setProfile(data)
       } catch (e) {
         console.warn(e)
       }
     })
 
     const ref = doc(db, 'sessions', sessionId)
-    const unsub = onSnapshot(ref, snap => {
+    const unsubSession = onSnapshot(ref, snap => {
       if (!snap.exists()) return
       const data = { id: snap.id, ...snap.data() }
-      setSession(data)
+      setSessionDoc(data)
+
       if (data.status === 'finished') {
         setSessionEnded(true)
         setShowEndCard(true)
+        cleanup()
       }
     })
 
     timerRef.current = setInterval(() => setTick(Date.now()), 1000)
 
     return () => {
-      mounted = false
       unsubAuth()
-      unsub()
+      unsubSession()
       if (timerRef.current) clearInterval(timerRef.current)
       cleanup()
     }
   }, [sessionId])
 
+  useEffect(() => {
+    if (!auth.currentUser?.uid) return
+    if (!sessionId) return
+
+    const billingRef = doc(db, 'sessions', sessionId, 'billing', auth.currentUser.uid)
+    const unsubBilling = onSnapshot(billingRef, snap => {
+      setCreditConsumed(Boolean(snap.exists() && snap.data()?.consumed))
+    })
+
+    return () => unsubBilling()
+  }, [sessionId, auth.currentUser?.uid])
+
+  useEffect(() => {
+    if (!sessionDoc || !isFree || creditConsumed) return
+    if (!timerState?.gracePassed) return
+    if (graceAttemptRef.current) return
+
+    graceAttemptRef.current = true
+
+    consumeFreeCreditOnce({
+      db,
+      sessionId,
+      uid: auth.currentUser?.uid,
+      mode: sessionDoc.mode,
+      userRef: doc(db, 'users', auth.currentUser.uid)
+    })
+      .then(result => {
+        if (result?.consumed) {
+          setCreditConsumed(true)
+        }
+      })
+      .catch(err => {
+        console.warn('credit deduction failed', err)
+        graceAttemptRef.current = false
+      })
+  }, [sessionDoc, isFree, timerState?.gracePassed, creditConsumed, sessionId])
+
+  useEffect(() => {
+    if (!sessionDoc || !isFree) return
+    if (!timerState?.finished) return
+    if (sessionDoc.status === 'finished') return
+
+    endSession(true)
+  }, [sessionDoc, isFree, timerState?.finished])
+
   async function cleanup() {
-    try { offerUnsubRef.current?.() } catch {}
-    try { answerUnsubRef.current?.() } catch {}
-    try { candidatesUnsubRef.current?.() } catch {}
+    try {
+      offerUnsubRef.current?.()
+    } catch {}
+    try {
+      answerUnsubRef.current?.()
+    } catch {}
+    try {
+      candidatesUnsubRef.current?.()
+    } catch {}
 
     offerUnsubRef.current = null
     answerUnsubRef.current = null
     candidatesUnsubRef.current = null
     seenCandidatesRef.current = new Set()
-
-    if (graceTimerRef.current) clearTimeout(graceTimerRef.current)
-    if (autoEndTimerRef.current) clearTimeout(autoEndTimerRef.current)
 
     try {
       if (pcRef.current) {
@@ -129,9 +219,33 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     setJoined(false)
   }
 
+  async function ensureSessionStartedAt() {
+    const ref = doc(db, 'sessions', sessionId)
+
+    await runTransaction(db, async tx => {
+      const snap = await tx.get(ref)
+      if (!snap.exists()) throw new Error('session-missing')
+
+      const data = snap.data() || {}
+      const patch = {}
+
+      if (!data.startedAt) {
+        patch.startedAt = serverTimestamp()
+      }
+
+      if (data.status !== 'active') {
+        patch.status = 'active'
+      }
+
+      if (Object.keys(patch).length > 0) {
+        tx.set(ref, patch, { merge: true })
+      }
+    })
+  }
+
   async function publishCandidate(candidate) {
     await addDoc(collection(db, 'sessions', sessionId, 'candidates'), {
-      sender: auth.currentUser?.uid || null,
+      sender: currentUidRef.current || null,
       candidate: candidate.toJSON(),
       ts: Date.now()
     })
@@ -167,24 +281,6 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     await attachLocalPreview(newStream)
   }
 
-  async function maybeConsumeCredit() {
-    if (!isFree || creditConsumed || !auth.currentUser) return
-    if (elapsed < 120) return
-
-    try {
-      const billingRef = doc(db, 'sessions', sessionId, 'billing', auth.currentUser.uid)
-      await setDoc(billingRef, {
-        uid: auth.currentUser.uid,
-        sessionId,
-        charged: true,
-        createdAt: serverTimestamp()
-      }, { merge: true })
-      setCreditConsumed(true)
-    } catch (e) {
-      console.warn(e)
-    }
-  }
-
   async function joinMeeting() {
     if (!auth.currentUser) {
       alert('Sign in first')
@@ -192,9 +288,15 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     }
 
     if (joined) return
+    if (sessionDoc?.status === 'finished') {
+      setShowEndCard(true)
+      return
+    }
 
     try {
       setStatus('getting-media')
+      await ensureSessionStartedAt()
+
       const stream = await createLocalStream(cameraFacing)
       localStreamRef.current = stream
       await attachLocalPreview(stream)
@@ -227,7 +329,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       }
 
       const selfUid = auth.currentUser.uid
-      const initiatorUid = session?.initiatorUid || session?.participants?.[0]?.uid || selfUid
+      const initiatorUid = sessionDoc?.initiatorUid || sessionDoc?.participants?.[0]?.uid || selfUid
       const amInitiator = initiatorUid === selfUid
 
       const offerRef = doc(db, 'sessions', sessionId, 'signaling', 'offer')
@@ -242,6 +344,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
 
           const data = change.doc.data()
           if (!data || data.sender === selfUid) return
+
           try {
             await pc.addIceCandidate(new RTCIceCandidate(data.candidate))
           } catch {}
@@ -251,12 +354,16 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       if (amInitiator) {
         const offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
-        await setDoc(offerRef, {
-          type: offer.type,
-          sdp: offer.sdp,
-          sender: selfUid,
-          createdAt: serverTimestamp()
-        }, { merge: true })
+        await setDoc(
+          offerRef,
+          {
+            type: offer.type,
+            sdp: offer.sdp,
+            sender: selfUid,
+            createdAt: serverTimestamp()
+          },
+          { merge: true }
+        )
 
         answerUnsubRef.current = onSnapshot(answerRef, async snap => {
           if (!snap.exists()) return
@@ -275,12 +382,16 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
             await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp })
             const answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
-            await setDoc(answerRef, {
-              type: answer.type,
-              sdp: answer.sdp,
-              sender: selfUid,
-              createdAt: serverTimestamp()
-            }, { merge: true })
+            await setDoc(
+              answerRef,
+              {
+                type: answer.type,
+                sdp: answer.sdp,
+                sender: selfUid,
+                createdAt: serverTimestamp()
+              },
+              { merge: true }
+            )
           } catch {}
         })
       }
@@ -291,19 +402,9 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       }
 
       setJoined(true)
-      setJoinedAt(Date.now())
-      setTick(Date.now())
+      setSessionEnded(false)
       setShowEndCard(false)
-
-      if (isFree) {
-        graceTimerRef.current = setTimeout(() => {
-          maybeConsumeCredit()
-        }, 120000)
-
-        autoEndTimerRef.current = setTimeout(async () => {
-          await endSession(true)
-        }, 1800000)
-      }
+      setStatus('connected')
     } catch (e) {
       console.error(e)
       alert('Unable to start video. Check camera and mic permissions.')
@@ -340,31 +441,38 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     }
   }
 
-  async function leaveSession() {
-    setShowEndCard(true)
-    await maybeConsumeCredit()
-    await cleanup()
-  }
-
   async function endSession(fromTimer = false) {
-    await maybeConsumeCredit()
     try {
-      await setDoc(doc(db, 'sessions', sessionId), {
+      await updateDoc(doc(db, 'sessions', sessionId), {
         status: 'finished',
         endedAt: serverTimestamp(),
         endedByTimer: !!fromTimer
-      }, { merge: true })
-    } catch {}
+      })
+    } catch (e) {
+      console.warn(e)
+    }
+
     setSessionEnded(true)
     setShowEndCard(true)
     await cleanup()
   }
 
-  const sessionMeta = {
-    exam: session?.exam || null,
-    subject: session?.subject || null,
-    mode: session?.mode || null
+  async function leaveSession() {
+    await endSession(false)
   }
+
+  const sessionMeta = {
+    exam: sessionDoc?.exam || null,
+    subject: sessionDoc?.subject || null,
+    mode: sessionDoc?.mode || null
+  }
+
+  const elapsed = sessionDoc?.startedAt?.toMillis
+    ? Math.floor((tick - sessionDoc.startedAt.toMillis()) / 1000)
+    : 0
+
+  const setupLeft = isFree ? Math.max(0, 120 - elapsed) : 0
+  const sessionLeft = isFree ? Math.max(0, 1800 - elapsed) : 0
 
   return (
     <div style={{ padding: 14 }}>
@@ -443,14 +551,14 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
             {isFree ? (
               <>
                 <div style={{ marginBottom: 6 }}>
-                  <strong>2-minute setup:</strong> {Math.max(0, graceLeft)}s
+                  <strong>2-minute setup:</strong> {setupLeft}s
                 </div>
                 <div style={{ color: '#cbd5e1', marginBottom: 10 }}>
                   Choose the chapter now. Leave within 2 minutes and your credit will not be used.
                 </div>
 
                 <div style={{ marginBottom: 6 }}>
-                  <strong>30-minute session:</strong> {Math.max(0, freeLeft)}s
+                  <strong>30-minute session:</strong> {sessionLeft}s
                 </div>
                 <div style={{ color: '#cbd5e1' }}>
                   When this timer ends, the session finishes automatically.
@@ -490,4 +598,4 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       ) : null}
     </div>
   )
-        }
+          }
