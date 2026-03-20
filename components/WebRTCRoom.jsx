@@ -47,6 +47,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const seenCandidatesRef = useRef(new Set())
   const timerRef = useRef(null)
   const graceAttemptRef = useRef(false)
+  const autoJoinAttemptRef = useRef(false)
   const currentUidRef = useRef(null)
 
   const [sessionDoc, setSessionDoc] = useState(sessionProp || null)
@@ -73,6 +74,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
 
   useEffect(() => {
     graceAttemptRef.current = false
+    autoJoinAttemptRef.current = false
     setCreditConsumed(false)
     setShowEndCard(false)
     setSessionEnded(false)
@@ -144,7 +146,30 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     })
 
     return () => unsubBilling()
-  }, [sessionId, auth.currentUser?.uid])
+  }, [sessionId])
+
+  useEffect(() => {
+    const uid = currentUidRef.current
+    if (!uid || !sessionDoc || joined || sessionEnded) return
+    if (sessionDoc.status !== 'active' && sessionDoc.status !== 'matching') return
+
+    const participants = sessionDoc.participants || []
+    const isParticipant =
+      participants.some(p => p.uid === uid) ||
+      sessionDoc.initiatorUid === uid
+
+    if (!isParticipant) return
+    if (autoJoinAttemptRef.current) return
+
+    autoJoinAttemptRef.current = true
+    const t = setTimeout(() => {
+      joinMeeting().catch(() => {
+        autoJoinAttemptRef.current = false
+      })
+    }, 450)
+
+    return () => clearTimeout(t)
+  }, [sessionDoc, joined, sessionEnded])
 
   useEffect(() => {
     if (!sessionDoc || !isFree || creditConsumed) return
@@ -253,8 +278,18 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
 
   async function createLocalStream(facingMode = 'user') {
     return navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
-      video: { facingMode: { ideal: facingMode } }
+      audio: {
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        channelCount: { ideal: 2 }
+      },
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 60 }
+      }
     })
   }
 
@@ -262,7 +297,27 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     if (!localVideoRef.current) return
     localVideoRef.current.srcObject = stream
     localVideoRef.current.muted = true
+    localVideoRef.current.playsInline = true
     await localVideoRef.current.play().catch(() => {})
+  }
+
+  async function boostSenderQuality(pc) {
+    try {
+      const videoSender = pc.getSenders().find(s => s.track && s.track.kind === 'video')
+      if (videoSender?.track) {
+        const params = videoSender.getParameters?.() || {}
+        params.degradationPreference = 'maintain-resolution'
+        params.encodings = [
+          {
+            maxBitrate: 2500000,
+            maxFramerate: 30
+          }
+        ]
+        await videoSender.setParameters(params)
+      }
+    } catch (e) {
+      console.warn('quality boost failed', e)
+    }
   }
 
   async function replaceCameraTrack(newTrack) {
@@ -279,6 +334,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     const newStream = new MediaStream([...audioTracks, newTrack])
     localStreamRef.current = newStream
     await attachLocalPreview(newStream)
+    await boostSenderQuality(pc)
   }
 
   async function joinMeeting() {
@@ -299,6 +355,10 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
 
       const stream = await createLocalStream(cameraFacing)
       localStreamRef.current = stream
+
+      const videoTrack = stream.getVideoTracks()[0]
+      if (videoTrack) videoTrack.contentHint = 'detail'
+
       await attachLocalPreview(stream)
 
       const pc = new RTCPeerConnection({
@@ -323,6 +383,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       }
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream))
+      await boostSenderQuality(pc)
 
       pc.onicecandidate = ev => {
         if (ev.candidate) publishCandidate(ev.candidate)
@@ -405,8 +466,10 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       setSessionEnded(false)
       setShowEndCard(false)
       setStatus('connected')
+      autoJoinAttemptRef.current = true
     } catch (e) {
       console.error(e)
+      autoJoinAttemptRef.current = false
       alert('Unable to start video. Check camera and mic permissions.')
       setStatus('error')
     }
@@ -428,11 +491,12 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     const nextFacing = cameraFacing === 'user' ? 'environment' : 'user'
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: nextFacing } },
+        video: { facingMode: { ideal: nextFacing }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
       })
       const track = stream.getVideoTracks()[0]
       if (!track) return
+      track.contentHint = 'detail'
       await replaceCameraTrack(track)
       setCameraFacing(nextFacing)
     } catch (e) {
@@ -534,16 +598,14 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
             <strong>Status:</strong> {status}
           </div>
 
-          <div
-            style={{
-              marginTop: 14,
-              padding: 14,
-              borderRadius: 14,
-              background: 'rgba(15,23,42,0.95)',
-              border: '1px solid rgba(148,163,184,0.18)',
-              color: '#e2e8f0'
-            }}
-          >
+          <div style={{
+            marginTop: 14,
+            padding: 14,
+            borderRadius: 14,
+            background: 'rgba(15,23,42,0.95)',
+            border: '1px solid rgba(148,163,184,0.18)',
+            color: '#e2e8f0'
+          }}>
             <div style={{ fontWeight: 800, marginBottom: 8 }}>
               {isFree ? 'Free session timer' : 'Unlimited session timer'}
             </div>
@@ -598,4 +660,4 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       ) : null}
     </div>
   )
-          }
+            }
