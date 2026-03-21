@@ -35,20 +35,31 @@ function getEffectivePlanId(profile) {
   return 'free'
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
   const remoteStreamRef = useRef(null)
+
   const offerUnsubRef = useRef(null)
   const answerUnsubRef = useRef(null)
   const candidatesUnsubRef = useRef(null)
   const seenCandidatesRef = useRef(new Set())
+
   const timerRef = useRef(null)
-  const graceAttemptRef = useRef(false)
+  const reconnectLockRef = useRef(false)
+  const reconnectAttemptsRef = useRef(0)
   const autoJoinAttemptRef = useRef(false)
   const currentUidRef = useRef(null)
+
+  const lastOfferSdpRef = useRef('')
+  const lastAnswerSdpRef = useRef('')
+  const cleanupLockRef = useRef(false)
 
   const [sessionDoc, setSessionDoc] = useState(sessionProp || null)
   const [profile, setProfile] = useState(null)
@@ -61,6 +72,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const [showEndCard, setShowEndCard] = useState(false)
   const [tick, setTick] = useState(Date.now())
   const [creditConsumed, setCreditConsumed] = useState(false)
+  const [joinBusy, setJoinBusy] = useState(false)
 
   const partner = useMemo(() => {
     const selfUid = currentUidRef.current
@@ -73,8 +85,12 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   const timerState = isFree ? getFreeTimerState(sessionDoc) : null
 
   useEffect(() => {
-    graceAttemptRef.current = false
+    reconnectAttemptsRef.current = 0
+    reconnectLockRef.current = false
     autoJoinAttemptRef.current = false
+    lastOfferSdpRef.current = ''
+    lastAnswerSdpRef.current = ''
+    cleanupLockRef.current = false
     setCreditConsumed(false)
     setShowEndCard(false)
     setSessionEnded(false)
@@ -150,7 +166,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
 
   useEffect(() => {
     const uid = currentUidRef.current
-    if (!uid || !sessionDoc || joined || sessionEnded) return
+    if (!uid || !sessionDoc || joined || sessionEnded || joinBusy) return
     if (sessionDoc.status !== 'active' && sessionDoc.status !== 'matching') return
 
     const participants = sessionDoc.participants || []
@@ -169,14 +185,11 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     }, 450)
 
     return () => clearTimeout(t)
-  }, [sessionDoc, joined, sessionEnded])
+  }, [sessionDoc, joined, sessionEnded, joinBusy])
 
   useEffect(() => {
     if (!sessionDoc || !isFree || creditConsumed) return
     if (!timerState?.gracePassed) return
-    if (graceAttemptRef.current) return
-
-    graceAttemptRef.current = true
 
     consumeFreeCreditOnce({
       db,
@@ -192,7 +205,6 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       })
       .catch(err => {
         console.warn('credit deduction failed', err)
-        graceAttemptRef.current = false
       })
   }, [sessionDoc, isFree, timerState?.gracePassed, creditConsumed, sessionId])
 
@@ -205,15 +217,12 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   }, [sessionDoc, isFree, timerState?.finished])
 
   async function cleanup() {
-    try {
-      offerUnsubRef.current?.()
-    } catch {}
-    try {
-      answerUnsubRef.current?.()
-    } catch {}
-    try {
-      candidatesUnsubRef.current?.()
-    } catch {}
+    if (cleanupLockRef.current) return
+    cleanupLockRef.current = true
+
+    try { offerUnsubRef.current?.() } catch {}
+    try { answerUnsubRef.current?.() } catch {}
+    try { candidatesUnsubRef.current?.() } catch {}
 
     offerUnsubRef.current = null
     answerUnsubRef.current = null
@@ -222,6 +231,10 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
 
     try {
       if (pcRef.current) {
+        pcRef.current.oniceconnectionstatechange = null
+        pcRef.current.onconnectionstatechange = null
+        pcRef.current.ontrack = null
+        pcRef.current.onicecandidate = null
         pcRef.current.close()
         pcRef.current = null
       }
@@ -242,6 +255,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     } catch {}
 
     setJoined(false)
+    cleanupLockRef.current = false
   }
 
   async function ensureSessionStartedAt() {
@@ -277,20 +291,33 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
   }
 
   async function createLocalStream(facingMode = 'user') {
-    return navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: { ideal: true },
-        noiseSuppression: { ideal: true },
-        autoGainControl: { ideal: true },
-        channelCount: { ideal: 2 }
-      },
-      video: {
-        facingMode: { ideal: facingMode },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 30, max: 60 }
-      }
-    })
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          channelCount: 1,
+          sampleRate: 48000
+        },
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 1280, min: 960 },
+          height: { ideal: 720, min: 540 },
+          frameRate: { ideal: 24, max: 30 }
+        }
+      })
+    } catch {
+      return navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 960 },
+          height: { ideal: 540 },
+          frameRate: { ideal: 24, max: 24 }
+        }
+      })
+    }
   }
 
   async function attachLocalPreview(stream) {
@@ -309,11 +336,22 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
         params.degradationPreference = 'maintain-resolution'
         params.encodings = [
           {
-            maxBitrate: 2500000,
-            maxFramerate: 30
+            maxBitrate: 1800000,
+            maxFramerate: 24
           }
         ]
         await videoSender.setParameters(params)
+      }
+
+      const audioSender = pc.getSenders().find(s => s.track && s.track.kind === 'audio')
+      if (audioSender?.track) {
+        const params = audioSender.getParameters?.() || {}
+        params.encodings = [
+          {
+            maxBitrate: 64000
+          }
+        ]
+        await audioSender.setParameters(params).catch(() => {})
       }
     } catch (e) {
       console.warn('quality boost failed', e)
@@ -337,6 +375,105 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     await boostSenderQuality(pc)
   }
 
+  async function setupSignaling(pc, selfUid) {
+    const initiatorUid = sessionDoc?.initiatorUid || sessionDoc?.participants?.[0]?.uid || selfUid
+    const amInitiator = initiatorUid === selfUid
+
+    const offerRef = doc(db, 'sessions', sessionId, 'signaling', 'offer')
+    const answerRef = doc(db, 'sessions', sessionId, 'signaling', 'answer')
+    const candCol = collection(db, 'sessions', sessionId, 'candidates')
+
+    candidatesUnsubRef.current = onSnapshot(candCol, snap => {
+      snap.docChanges().forEach(async change => {
+        if (change.type !== 'added') return
+        if (seenCandidatesRef.current.has(change.doc.id)) return
+        seenCandidatesRef.current.add(change.doc.id)
+
+        const data = change.doc.data()
+        if (!data || data.sender === selfUid) return
+
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate))
+        } catch {}
+      })
+    })
+
+    if (amInitiator) {
+      answerUnsubRef.current = onSnapshot(answerRef, async snap => {
+        if (!snap.exists()) return
+        const data = snap.data()
+        if (!data?.sdp) return
+        if (data.sdp === lastAnswerSdpRef.current) return
+
+        try {
+          await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
+          lastAnswerSdpRef.current = data.sdp
+        } catch {}
+      })
+    } else {
+      offerUnsubRef.current = onSnapshot(offerRef, async snap => {
+        if (!snap.exists()) return
+        const data = snap.data()
+        if (!data?.sdp) return
+        if (data.sdp === lastOfferSdpRef.current) return
+
+        try {
+          await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp })
+          lastOfferSdpRef.current = data.sdp
+
+          const answer = await pc.createAnswer()
+          await pc.setLocalDescription(answer)
+          await setDoc(
+            answerRef,
+            {
+              type: answer.type,
+              sdp: answer.sdp,
+              sender: selfUid,
+              createdAt: serverTimestamp()
+            },
+            { merge: true }
+          )
+        } catch {}
+      })
+    }
+  }
+
+  async function restartConnection(reason = 'network') {
+    const pc = pcRef.current
+    if (!pc || reconnectLockRef.current) return
+    if (!sessionDoc || sessionDoc.status === 'finished') return
+
+    reconnectLockRef.current = true
+    setStatus(`reconnecting (${reason})`)
+
+    try {
+      pc.restartIce?.()
+      await sleep(250)
+
+      const offer = await pc.createOffer({ iceRestart: true })
+      await pc.setLocalDescription(offer)
+
+      lastOfferSdpRef.current = offer.sdp || ''
+      await setDoc(
+        doc(db, 'sessions', sessionId, 'signaling', 'offer'),
+        {
+          type: offer.type,
+          sdp: offer.sdp,
+          sender: currentUidRef.current || null,
+          iceRestart: true,
+          updatedAt: serverTimestamp()
+        },
+        { merge: true }
+      )
+    } catch (e) {
+      console.warn('restart failed', e)
+    } finally {
+      setTimeout(() => {
+        reconnectLockRef.current = false
+      }, 3000)
+    }
+  }
+
   async function joinMeeting() {
     if (!auth.currentUser) {
       alert('Sign in first')
@@ -349,6 +486,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       return
     }
 
+    setJoinBusy(true)
     try {
       setStatus('getting-media')
       await ensureSessionStartedAt()
@@ -389,34 +527,51 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
         if (ev.candidate) publishCandidate(ev.candidate)
       }
 
+      pc.oniceconnectionstatechange = () => {
+        const state = pc.iceConnectionState
+
+        if (state === 'connected' || state === 'completed') {
+          reconnectLockRef.current = false
+          reconnectAttemptsRef.current = 0
+          setStatus('connected')
+          return
+        }
+
+        if (state === 'disconnected' || state === 'failed') {
+          setStatus(`reconnecting (${state})`)
+          if (reconnectAttemptsRef.current < 3) {
+            reconnectAttemptsRef.current += 1
+            restartConnection(state).catch(() => {})
+          } else {
+            setStatus(state)
+          }
+        }
+      }
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState
+        if (state === 'connected') {
+          reconnectLockRef.current = false
+          reconnectAttemptsRef.current = 0
+          setStatus('connected')
+        }
+        if (state === 'failed' || state === 'disconnected') {
+          setStatus(`reconnecting (${state})`)
+        }
+      }
+
+      await setupSignaling(pc, auth.currentUser.uid)
+
       const selfUid = auth.currentUser.uid
       const initiatorUid = sessionDoc?.initiatorUid || sessionDoc?.participants?.[0]?.uid || selfUid
       const amInitiator = initiatorUid === selfUid
 
-      const offerRef = doc(db, 'sessions', sessionId, 'signaling', 'offer')
-      const answerRef = doc(db, 'sessions', sessionId, 'signaling', 'answer')
-      const candCol = collection(db, 'sessions', sessionId, 'candidates')
-
-      candidatesUnsubRef.current = onSnapshot(candCol, snap => {
-        snap.docChanges().forEach(async change => {
-          if (change.type !== 'added') return
-          if (seenCandidatesRef.current.has(change.doc.id)) return
-          seenCandidatesRef.current.add(change.doc.id)
-
-          const data = change.doc.data()
-          if (!data || data.sender === selfUid) return
-
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate))
-          } catch {}
-        })
-      })
-
       if (amInitiator) {
         const offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
+        lastOfferSdpRef.current = offer.sdp || ''
         await setDoc(
-          offerRef,
+          doc(db, 'sessions', sessionId, 'signaling', 'offer'),
           {
             type: offer.type,
             sdp: offer.sdp,
@@ -425,41 +580,6 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
           },
           { merge: true }
         )
-
-        answerUnsubRef.current = onSnapshot(answerRef, async snap => {
-          if (!snap.exists()) return
-          const data = snap.data()
-          if (!data?.sdp) return
-          try {
-            await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
-          } catch {}
-        })
-      } else {
-        offerUnsubRef.current = onSnapshot(offerRef, async snap => {
-          if (!snap.exists()) return
-          const data = snap.data()
-          if (!data?.sdp) return
-          try {
-            await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp })
-            const answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
-            await setDoc(
-              answerRef,
-              {
-                type: answer.type,
-                sdp: answer.sdp,
-                sender: selfUid,
-                createdAt: serverTimestamp()
-              },
-              { merge: true }
-            )
-          } catch {}
-        })
-      }
-
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') setStatus('connected')
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') setStatus(pc.connectionState)
       }
 
       setJoined(true)
@@ -472,10 +592,10 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       autoJoinAttemptRef.current = false
       alert('Unable to start video. Check camera and mic permissions.')
       setStatus('error')
+    } finally {
+      setJoinBusy(false)
     }
-  }
-
-  function toggleMic() {
+        }function toggleMic() {
     const tracks = localStreamRef.current?.getAudioTracks() || []
     tracks.forEach(t => (t.enabled = !t.enabled))
     setMicOn(v => !v)
@@ -491,7 +611,11 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
     const nextFacing = cameraFacing === 'user' ? 'environment' : 'user'
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: nextFacing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: {
+          facingMode: { ideal: nextFacing },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
         audio: false
       })
       const track = stream.getVideoTracks()[0]
@@ -552,8 +676,8 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
                 muted
                 style={{
                   width: '100%',
-                  maxWidth: 280,
-                  height: 240,
+                  maxWidth: 320,
+                  height: 260,
                   background: '#000',
                   borderRadius: 12,
                   objectFit: 'cover'
@@ -571,7 +695,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
                 playsInline
                 style={{
                   width: '100%',
-                  minHeight: 240,
+                  minHeight: 260,
                   background: '#000',
                   borderRadius: 12,
                   objectFit: 'cover'
@@ -585,7 +709,7 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
             <button onClick={toggleCam}>{camOn ? 'Cam Off' : 'Cam On'}</button>
             <button onClick={switchCamera}>Switch camera</button>
             {!joined ? (
-              <button onClick={joinMeeting}>Join meeting</button>
+              <button onClick={joinMeeting} disabled={joinBusy}>Join meeting</button>
             ) : (
               <button onClick={leaveSession}>Leave</button>
             )}
@@ -660,4 +784,4 @@ export default function WebRTCRoom({ sessionId, session: sessionProp }) {
       ) : null}
     </div>
   )
-            }
+}
