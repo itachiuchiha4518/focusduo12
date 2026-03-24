@@ -24,7 +24,7 @@ const styles = {
   grid2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 18 },
   gridPlans: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginTop: 18 },
   box: { border: '1px solid #e5e7eb', borderRadius: 14, background: '#fff', padding: 16 },
-  list: { maxHeight: 520, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 12, background: '#fff' },
+  list: { maxHeight: 320, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 12, background: '#fff' },
   row: { display: 'flex', gap: 10, flexWrap: 'wrap' },
   input: { width: '100%', padding: 10, borderRadius: 10, border: '1px solid #d1d5db', outline: 'none' },
   ta: { width: '100%', minHeight: 90, padding: 10, borderRadius: 10, border: '1px solid #d1d5db', outline: 'none', resize: 'vertical' },
@@ -60,6 +60,49 @@ function planExpiryFromPlanId(planId) {
   const days = Number(plan.durationDays || 0)
   if (!days) return null
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000)
+}
+
+function byStatus(items, status) {
+  return items.filter(item => (item.status || 'pending') === status)
+}
+
+function SectionList({ title, items, selectedId, onSelect, emptyText, statusColor, subtitle }) {
+  return (
+    <div style={styles.box}>
+      <h3 style={{ marginTop: 0, marginBottom: 4 }}>{title}</h3>
+      {subtitle ? <div style={{ color: '#6b7280', marginBottom: 10 }}>{subtitle}</div> : null}
+      <div style={styles.list}>
+        {items.length === 0 ? (
+          <div style={{ padding: 14, color: '#6b7280' }}>{emptyText}</div>
+        ) : items.map(item => (
+          <button
+            key={item.id}
+            onClick={() => onSelect(item.id)}
+            style={{
+              width: '100%',
+              textAlign: 'left',
+              padding: 14,
+              border: 'none',
+              borderBottom: '1px solid #e5e7eb',
+              background: item.id === selectedId ? '#eff6ff' : '#fff',
+              cursor: 'pointer'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+              <strong>{item.name || item.reportedName || 'Anonymous'}</strong>
+              <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, background: statusColor(item.status) }}>
+                {item.status || 'pending'}
+              </span>
+            </div>
+            <div style={{ color: '#6b7280', marginTop: 6 }}>
+              {item.planLabel || item.planId || item.reason || (item.selectedReasons || []).slice(0, 2).join(' • ') || '—'}
+            </div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>{fmt(item.createdAt)}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export default function AdminPage() {
@@ -120,15 +163,8 @@ export default function AdminPage() {
     return () => unsub()
   }, [])
 
-  const selectedReport = useMemo(
-    () => reports.find(r => r.id === selectedReportId) || null,
-    [reports, selectedReportId]
-  )
-
-  const selectedRequest = useMemo(
-    () => requests.find(r => r.id === selectedRequestId) || null,
-    [requests, selectedRequestId]
-  )
+  const selectedReport = useMemo(() => reports.find(r => r.id === selectedReportId) || null, [reports, selectedReportId])
+  const selectedRequest = useMemo(() => requests.find(r => r.id === selectedRequestId) || null, [requests, selectedRequestId])
 
   useEffect(() => {
     async function loadUserMeta() {
@@ -136,11 +172,9 @@ export default function AdminPage() {
         setSelectedUser(null)
         return
       }
-
       const snap = await getDoc(doc(db, 'users', selectedReport.reportedUid))
       setSelectedUser(snap.exists() ? { id: snap.id, ...snap.data() } : { warningCount: 0, accountStatus: 'active' })
     }
-
     loadUserMeta()
   }, [selectedReport?.reportedUid])
 
@@ -267,9 +301,7 @@ export default function AdminPage() {
     } finally {
       setBusy(false)
     }
-  }
-
-  async function uploadQrImage(planId, file) {
+                                    }async function uploadQrImage(planId, file) {
     if (!file) return
     const reader = new FileReader()
     reader.onload = async () => {
@@ -389,6 +421,21 @@ export default function AdminPage() {
     pendingRequests: requests.filter(r => r.status === 'pending').length
   }), [reports, requests])
 
+  const reportNew = byStatus(reports, 'open')
+  const reportWarned = byStatus(reports, 'warning-issued')
+  const reportBanned = byStatus(reports, 'banned')
+
+  const reqNew = byStatus(requests, 'pending')
+  const reqGranted = byStatus(requests, 'approved')
+  const reqDeclined = byStatus(requests, 'declined')
+
+  const statusBg = s => {
+    if (s === 'open' || s === 'pending') return '#fef3c7'
+    if (s === 'warning-issued' || s === 'approved') return '#dbeafe'
+    if (s === 'banned' || s === 'declined') return '#fee2e2'
+    return '#e5e7eb'
+  }
+
   if (!user) {
     return (
       <div style={styles.page}>
@@ -406,7 +453,9 @@ export default function AdminPage() {
         <button onClick={logout} style={styles.gray}>Sign out</button>
       </div>
     )
-        }return (
+  }
+
+  return (
     <div style={styles.page}>
       <div style={styles.topRow}>
         <div>
@@ -424,40 +473,36 @@ export default function AdminPage() {
       </div>
 
       <div style={styles.grid2}>
-        <div style={styles.box}>
-          <h2 style={{ marginTop: 0 }}>Reports</h2>
-          <div style={styles.list}>
-            {reports.length === 0 ? (
-              <div style={{ padding: 14, color: '#6b7280' }}>No reports yet.</div>
-            ) : reports.map(r => (
-              <button
-                key={r.id}
-                onClick={() => setSelectedReportId(r.id)}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: 14,
-                  border: 'none',
-                  borderBottom: '1px solid #e5e7eb',
-                  background: r.id === selectedReportId ? '#eff6ff' : '#fff',
-                  cursor: 'pointer'
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <strong>{r.reportedName || 'Unknown user'}</strong>
-                  <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, background: r.status === 'open' ? '#fef3c7' : r.status === 'banned' ? '#fee2e2' : r.status === 'warning-issued' ? '#dbeafe' : '#e5e7eb' }}>
-                    {r.status || 'open'}
-                  </span>
-                </div>
-                <div style={{ fontSize: 13, color: '#6b7280', marginTop: 6 }}>
-                  {(r.selectedReasons || []).slice(0, 2).join(' • ') || 'No preset reason'}
-                </div>
-                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>{fmt(r.createdAt)}</div>
-              </button>
-            ))}
-          </div>
-        </div>
+        <SectionList
+          title={`New reports (${reportNew.length})`}
+          items={reportNew}
+          selectedId={selectedReportId}
+          onSelect={setSelectedReportId}
+          emptyText="No new reports."
+          statusColor={statusBg}
+          subtitle="Reports waiting for action."
+        />
+        <SectionList
+          title={`Warned reports (${reportWarned.length})`}
+          items={reportWarned}
+          selectedId={selectedReportId}
+          onSelect={setSelectedReportId}
+          emptyText="No warned reports."
+          statusColor={statusBg}
+          subtitle="Reports where a warning was already sent."
+        />
+      </div>
 
+      <div style={styles.grid2}>
+        <SectionList
+          title={`Banned reports (${reportBanned.length})`}
+          items={reportBanned}
+          selectedId={selectedReportId}
+          onSelect={setSelectedReportId}
+          emptyText="No banned reports."
+          statusColor={statusBg}
+          subtitle="Reports that resulted in a ban."
+        />
         <div style={styles.box}>
           {!selectedReport ? (
             <div style={{ color: '#6b7280' }}>Select a report.</div>
@@ -519,39 +564,36 @@ export default function AdminPage() {
       </div>
 
       <div style={styles.grid2}>
-        <div style={styles.box}>
-          <h2 style={{ marginTop: 0 }}>Subscription requests</h2>
-          <div style={styles.list}>
-            {requests.length === 0 ? (
-              <div style={{ padding: 14, color: '#6b7280' }}>No subscription requests yet.</div>
-            ) : requests.map(r => (
-              <button
-                key={r.id}
-                onClick={() => setSelectedRequestId(r.id)}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: 14,
-                  border: 'none',
-                  borderBottom: '1px solid #e5e7eb',
-                  background: r.id === selectedRequestId ? '#eff6ff' : '#fff',
-                  cursor: 'pointer'
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <strong>{r.name || 'Anonymous'}</strong>
-                  <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, background: r.status === 'pending' ? '#fef3c7' : r.status === 'approved' ? '#dcfce7' : '#fee2e2' }}>
-                    {r.status || 'pending'}
-                  </span>
-                </div>
-                <div style={{ color: '#6b7280', marginTop: 6 }}>{r.planLabel || r.planId || 'Plan'}</div>
-                <div style={{ marginTop: 4, fontSize: 13, color: '#0f172a' }}>UTR: {r.utr || '—'}</div>
-                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>{fmt(r.createdAt)}</div>
-              </button>
-            ))}
-          </div>
-        </div>
+        <SectionList
+          title={`New requests (${reqNew.length})`}
+          items={reqNew}
+          selectedId={selectedRequestId}
+          onSelect={setSelectedRequestId}
+          emptyText="No new requests."
+          statusColor={statusBg}
+          subtitle="Pending subscription requests."
+        />
+        <SectionList
+          title={`Granted requests (${reqGranted.length})`}
+          items={reqGranted}
+          selectedId={selectedRequestId}
+          onSelect={setSelectedRequestId}
+          emptyText="No granted requests."
+          statusColor={statusBg}
+          subtitle="Approved subscription requests."
+        />
+      </div>
 
+      <div style={styles.grid2}>
+        <SectionList
+          title={`Declined requests (${reqDeclined.length})`}
+          items={reqDeclined}
+          selectedId={selectedRequestId}
+          onSelect={setSelectedRequestId}
+          emptyText="No declined requests."
+          statusColor={statusBg}
+          subtitle="Rejected subscription requests."
+        />
         <div style={styles.box}>
           {!selectedRequest ? (
             <div style={{ color: '#6b7280' }}>Select a request.</div>
@@ -740,4 +782,4 @@ export default function AdminPage() {
       </div>
     </div>
   )
-}
+              }
