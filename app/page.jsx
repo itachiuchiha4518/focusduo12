@@ -1,982 +1,568 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { auth, googleProvider } from '../lib/firebase'
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
 
-// ─── Load Google Fonts safely (avoids SSR hydration issues) ───
-function useGoogleFonts() {
-  useEffect(() => {
+function useFonts() {
+  useEffect(function () {
     if (document.getElementById('fd-fonts')) return
-    const link = document.createElement('link')
+    var link = document.createElement('link')
     link.id = 'fd-fonts'
     link.rel = 'stylesheet'
-    link.href = 'https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800;900&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap'
+    link.href = 'https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,500;0,600;0,700;1,500&family=DM+Sans:wght@400;500;600&display=swap'
     document.head.appendChild(link)
   }, [])
 }
 
-// ─── Scroll-triggered fade in ──────────────────────────────────
-function FadeIn({ children, delay = 0, up = 24, style = {} }) {
-  const ref = useRef(null)
-  const [on, setOn] = useState(false)
-  useEffect(() => {
-    const el = ref.current
+function Reveal({ children, delay, style }) {
+  var ref = useRef(null)
+  var [on, setOn] = useState(false)
+  var d = delay || 0
+
+  useEffect(function () {
+    var el = ref.current
     if (!el) return
-    const obs = new IntersectionObserver(
-      ([e]) => { if (e.isIntersecting) { setOn(true); obs.disconnect() } },
-      { threshold: 0.08 }
-    )
+    var obs = new IntersectionObserver(function (entries) {
+      if (entries[0].isIntersecting) { setOn(true); obs.disconnect() }
+    }, { threshold: 0.08 })
     obs.observe(el)
-    return () => obs.disconnect()
+    return function () { obs.disconnect() }
   }, [])
+
   return (
     <div
       ref={ref}
-      style={{
+      style={Object.assign({
         opacity: on ? 1 : 0,
-        transform: on ? 'translateY(0px)' : 'translateY(' + up + 'px)',
-        transition: 'opacity 0.8s cubic-bezier(.16,1,.3,1) ' + delay + 'ms, transform 0.8s cubic-bezier(.16,1,.3,1) ' + delay + 'ms',
-        ...style
-      }}
+        transform: on ? 'translateY(0)' : 'translateY(18px)',
+        transition: 'opacity 0.55s ease ' + d + 'ms, transform 0.55s ease ' + d + 'ms'
+      }, style || {})}
     >
       {children}
     </div>
   )
 }
 
-// ─── Animated counter ──────────────────────────────────────────
-function Count({ to, prefix = '', suffix = '' }) {
-  const [v, setV] = useState(0)
-  const ref = useRef(null)
-  const done = useRef(false)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const obs = new IntersectionObserver(
-      ([e]) => {
-        if (e.isIntersecting && !done.current) {
-          done.current = true
-          const start = performance.now()
-          const dur = 1600
-          const run = (now) => {
-            const p = Math.min((now - start) / dur, 1)
-            const ease = 1 - Math.pow(1 - p, 4)
-            setV(Math.floor(ease * to))
-            if (p < 1) requestAnimationFrame(run)
-            else setV(to)
-          }
-          requestAnimationFrame(run)
-        }
-      },
-      { threshold: 0.5 }
-    )
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, [to])
-  return <span ref={ref}>{prefix}{v}{suffix}</span>
-}
-
-// ─── Auth Modal ────────────────────────────────────────────────
 function AuthModal({ onClose, onDone }) {
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState('')
+  var [busy, setBusy] = useState(false)
+  var [err, setErr]   = useState('')
 
-  async function doSignIn() {
-    setBusy(true)
-    setErr('')
+  async function go() {
+    setBusy(true); setErr('')
     try {
       await signInWithPopup(auth, googleProvider)
       onDone()
     } catch (e) {
       console.error(e)
       setErr('Sign in failed. Please try again.')
-    } finally {
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
-  function onBg(e) {
-    if (e.target === e.currentTarget) onClose()
-  }
+  function onBg(e) { if (e.target === e.currentTarget) onClose() }
 
   return (
-    <div
-      onClick={onBg}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 999,
-        background: 'rgba(0,0,0,0.8)',
-        backdropFilter: 'blur(12px)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: '20px'
-      }}
-    >
+    <div onClick={onBg} style={{
+      position: 'fixed', inset: 0, zIndex: 900,
+      background: 'rgba(26,26,24,0.4)', backdropFilter: 'blur(6px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24
+    }}>
       <div style={{
-        width: '100%', maxWidth: 420,
-        background: '#0D1421',
-        border: '1px solid rgba(79,142,247,0.3)',
-        borderRadius: 24, padding: '40px 32px',
-        position: 'relative',
-        boxShadow: '0 40px 80px rgba(0,0,0,0.6)'
+        width: '100%', maxWidth: 400,
+        background: '#FFFFFF', border: '1px solid #E4E2DC',
+        borderRadius: 14, padding: '36px 32px',
+        position: 'relative', boxShadow: '0 24px 64px rgba(26,26,24,0.14)'
       }}>
-        {/* Close */}
-        <button
-          onClick={onClose}
-          style={{
-            position: 'absolute', top: 16, right: 16,
-            width: 32, height: 32, borderRadius: 8,
-            background: 'rgba(255,255,255,0.06)',
-            border: 'none', color: '#64748B',
-            cursor: 'pointer', fontSize: 18,
-            display: 'flex', alignItems: 'center', justifyContent: 'center'
-          }}
-        >
-          ×
-        </button>
+        <button onClick={onClose} style={{
+          position: 'absolute', top: 16, right: 16,
+          width: 28, height: 28, borderRadius: 6,
+          background: '#F5F3EE', border: 'none', color: '#878580',
+          cursor: 'pointer', fontSize: 18, lineHeight: 1,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>x</button>
 
-        <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{ fontSize: 48, marginBottom: 14 }}>📚</div>
-          <h2 style={{
-            fontFamily: 'Outfit, sans-serif',
-            fontSize: 26, fontWeight: 900,
-            color: '#F1F5F9', margin: '0 0 10px'
-          }}>
-            Join FocusDuo
-          </h2>
-          <p style={{ color: '#64748B', fontSize: 15, lineHeight: 1.6, margin: 0 }}>
-            Sign in with Google to get matched with a study partner. Free — no card needed.
-          </p>
-        </div>
+        <h2 style={{ fontFamily: 'Lora, Georgia, serif', fontSize: 22, fontWeight: 600, color: '#1A1A18', marginBottom: 8 }}>
+          Create your account
+        </h2>
+        <p style={{ fontSize: 14, lineHeight: 1.65, color: '#6B6860', marginBottom: 24 }}>
+          Sign in with Google to start finding study partners. Free, no card needed.
+        </p>
 
-        {/* Google button */}
-        <button
-          onClick={doSignIn}
-          disabled={busy}
-          style={{
-            width: '100%', padding: '15px 20px',
-            borderRadius: 14,
-            border: '1px solid rgba(255,255,255,0.1)',
-            background: busy ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.07)',
-            color: '#F1F5F9', fontWeight: 700, fontSize: 16,
-            cursor: busy ? 'not-allowed' : 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-            transition: 'all 0.2s',
-            fontFamily: 'Plus Jakarta Sans, sans-serif'
-          }}
-        >
-          {!busy && (
-            <svg width="20" height="20" viewBox="0 0 48 48">
-              <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.7-.4-3.9z"/>
-              <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
-              <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2A12 12 0 0 1 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
-              <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3a12 12 0 0 1-4.1 5.6l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.7-.4-3.9z"/>
-            </svg>
-          )}
+        <button onClick={go} disabled={busy} style={{
+          width: '100%', padding: '13px 20px', borderRadius: 9,
+          border: '1px solid #E4E2DC', background: busy ? '#F5F3EE' : '#FFFFFF',
+          color: '#1A1A18', fontWeight: 600, fontSize: 15,
+          cursor: busy ? 'not-allowed' : 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+          fontFamily: 'DM Sans, sans-serif', transition: 'background 0.15s'
+        }}>
+          <svg width="18" height="18" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
+            <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.7-.4-3.9z"/>
+            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+            <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2A12 12 0 0 1 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
+            <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3a12 12 0 0 1-4.1 5.6l6.2 5.2C36.9 39.2 44 34 44 24c0-1.3-.1-2.7-.4-3.9z"/>
+          </svg>
           {busy ? 'Signing in...' : 'Continue with Google'}
         </button>
 
-        {err && (
-          <div style={{
-            marginTop: 12, padding: '10px 14px', borderRadius: 10,
-            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-            color: '#FCA5A5', fontSize: 13, textAlign: 'center'
-          }}>
-            {err}
-          </div>
-        )}
-
-        <div style={{ marginTop: 20, textAlign: 'center', color: '#374151', fontSize: 12, fontWeight: 600 }}>
-          ✅ Free &nbsp;·&nbsp; 🔒 Google secured &nbsp;·&nbsp; 📱 Works on mobile
-        </div>
+        {err ? <p style={{ marginTop: 10, fontSize: 13, color: '#B45309', textAlign: 'center' }}>{err}</p> : null}
+        <p style={{ marginTop: 16, fontSize: 12, color: '#A8A59F', textAlign: 'center' }}>
+          We collect only your name and email. No card required.
+        </p>
       </div>
     </div>
   )
 }
 
-// ─── Match demo card ───────────────────────────────────────────
-const DEMO_NAMES = ['Arjun K.', 'Priya S.', 'Rahul M.', 'Sneha P.', 'Dev R.', 'Ananya T.']
-
-function MatchCard({ user, openAuth }) {
-  const router = useRouter()
-  const [exam, setExam] = useState('JEE')
-  const [subj, setSubj] = useState('Physics')
-  const [phase, setPhase] = useState('idle')
-  const [dots, setDots] = useState('.')
-  const [partner, setPartner] = useState('')
-
-  useEffect(() => {
-    if (phase !== 'searching') return
-    const di = setInterval(() => setDots(d => d.length >= 3 ? '.' : d + '.'), 400)
-    const ti = setTimeout(() => {
-      setPartner(DEMO_NAMES[Math.floor(Math.random() * DEMO_NAMES.length)])
-      setPhase('matched')
-    }, 2600)
-    return () => { clearInterval(di); clearTimeout(ti) }
-  }, [phase])
-
-  useEffect(() => {
-    if (phase !== 'matched') return
-    const t = setTimeout(() => router.push('/join'), 1800)
-    return () => clearTimeout(t)
-  }, [phase, router])
-
-  function start() {
-    if (phase !== 'idle') return
-    if (!user) { openAuth(); return }
-    setPhase('searching')
-  }
-
-  const subjects = exam === 'NEET'
-    ? ['Physics', 'Chemistry', 'Biology']
-    : ['Physics', 'Chemistry', 'Math']
-
-  return (
-    <div style={{
-      background: 'rgba(13,20,33,0.95)',
-      border: '1px solid rgba(79,142,247,0.25)',
-      borderRadius: 24, padding: 28,
-      width: '100%', maxWidth: 390,
-      backdropFilter: 'blur(16px)',
-      boxShadow: '0 32px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)'
-    }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 22 }}>
-        <div style={{
-          width: 8, height: 8, borderRadius: '50%',
-          background: '#10B981',
-          boxShadow: '0 0 10px #10B981'
-        }} />
-        <span style={{
-          fontSize: 11, fontWeight: 800, color: '#10B981',
-          letterSpacing: 2, textTransform: 'uppercase',
-          fontFamily: 'Outfit, sans-serif'
-        }}>
-          Live matchmaker
-        </span>
-      </div>
-
-      {/* Exam tabs */}
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8, fontFamily: 'Outfit, sans-serif' }}>Exam</div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {['JEE', 'NEET'].map(e => (
-            <button
-              key={e}
-              onClick={() => { if (phase === 'idle') { setExam(e); setSubj('Physics') } }}
-              style={{
-                flex: 1, padding: '10px 0', borderRadius: 10,
-                fontWeight: 800, fontSize: 14, border: 'none', cursor: 'pointer',
-                transition: 'all 0.2s',
-                background: exam === e
-                  ? 'linear-gradient(135deg, #4F8EF7, #8B5CF6)'
-                  : 'rgba(255,255,255,0.05)',
-                color: exam === e ? '#fff' : '#64748B',
-                fontFamily: 'Outfit, sans-serif',
-                boxShadow: exam === e ? '0 4px 16px rgba(79,142,247,0.4)' : 'none'
-              }}
-            >
-              {e}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Subject grid */}
-      <div style={{ marginBottom: 22 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8, fontFamily: 'Outfit, sans-serif' }}>Subject</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-          {subjects.map(s => (
-            <button
-              key={s}
-              onClick={() => { if (phase === 'idle') setSubj(s) }}
-              style={{
-                padding: '9px 4px', borderRadius: 10,
-                fontWeight: 700, fontSize: 13, cursor: 'pointer',
-                border: subj === s ? '1px solid rgba(79,142,247,0.6)' : '1px solid rgba(255,255,255,0.06)',
-                background: subj === s ? 'rgba(79,142,247,0.12)' : 'rgba(255,255,255,0.04)',
-                color: subj === s ? '#7CB9FF' : '#64748B',
-                transition: 'all 0.15s',
-                fontFamily: 'Outfit, sans-serif'
-              }}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Action */}
-      {phase === 'idle' && (
-        <button
-          onClick={start}
-          style={{
-            width: '100%', padding: '15px 0', borderRadius: 14,
-            fontWeight: 900, fontSize: 16, border: 'none', cursor: 'pointer',
-            background: 'linear-gradient(135deg, #4F8EF7 0%, #8B5CF6 100%)',
-            color: '#fff', letterSpacing: 0.3,
-            boxShadow: '0 8px 28px rgba(79,142,247,0.45)',
-            transition: 'transform 0.15s, box-shadow 0.15s',
-            fontFamily: 'Outfit, sans-serif'
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.transform = 'translateY(-2px)'
-            e.currentTarget.style.boxShadow = '0 14px 36px rgba(79,142,247,0.55)'
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.transform = 'translateY(0)'
-            e.currentTarget.style.boxShadow = '0 8px 28px rgba(79,142,247,0.45)'
-          }}
-        >
-          {user ? 'Find ' + exam + ' ' + subj + ' partner →' : '🔐 Sign in & match →'}
-        </button>
-      )}
-
-      {phase === 'searching' && (
-        <div style={{ textAlign: 'center', padding: '12px 0' }}>
-          <div style={{
-            width: 44, height: 44, margin: '0 auto 14px',
-            border: '3px solid rgba(79,142,247,0.2)',
-            borderTopColor: '#4F8EF7',
-            borderRadius: '50%',
-            animation: 'spin 0.8s linear infinite'
-          }} />
-          <div style={{ color: '#7CB9FF', fontWeight: 700, fontSize: 15, marginBottom: 6, fontFamily: 'Outfit, sans-serif' }}>
-            Searching{dots}
-          </div>
-          <div style={{ color: '#374151', fontSize: 13 }}>
-            Finding your {exam} {subj} partner
-          </div>
-        </div>
-      )}
-
-      {phase === 'matched' && (
-        <div style={{ textAlign: 'center', padding: '8px 0' }}>
-          <div style={{ fontSize: 44, marginBottom: 10 }}>🎉</div>
-          <div style={{ color: '#10B981', fontWeight: 900, fontSize: 18, marginBottom: 6, fontFamily: 'Outfit, sans-serif' }}>
-            Matched with {partner}!
-          </div>
-          <div style={{ color: '#374151', fontSize: 13 }}>Opening your session...</div>
-        </div>
-      )}
-
-      {!user && phase === 'idle' && (
-        <div style={{ marginTop: 12, textAlign: 'center', color: '#374151', fontSize: 12 }}>
-          Free · Google sign in · No card needed
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Main page ─────────────────────────────────────────────────
 export default function Page() {
-  useGoogleFonts()
+  useFonts()
 
-  const router = useRouter()
-  const [user, setUser] = useState(null)
-  const [ready, setReady] = useState(false)
-  const [showAuth, setShowAuth] = useState(false)
-  const [scrolled, setScrolled] = useState(false)
+  var router    = useRouter()
+  var [user, setUser]         = useState(null)
+  var [ready, setReady]       = useState(false)
+  var [showAuth, setShowAuth] = useState(false)
+  var [scrolled, setScrolled] = useState(false)
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, u => {
-      setUser(u || null)
-      setReady(true)
-    })
-    return () => unsub()
+  useEffect(function () {
+    var u = onAuthStateChanged(auth, function (u) { setUser(u || null); setReady(true) })
+    return function () { u() }
   }, [])
 
-  useEffect(() => {
-    const fn = () => setScrolled(window.scrollY > 48)
+  useEffect(function () {
+    function fn() { setScrolled(window.scrollY > 52) }
     window.addEventListener('scroll', fn, { passive: true })
-    return () => window.removeEventListener('scroll', fn)
+    return function () { window.removeEventListener('scroll', fn) }
   }, [])
-
-  const doSignOut = useCallback(() => signOut(auth), [])
 
   function openAuth() { setShowAuth(true) }
   function closeAuth() { setShowAuth(false) }
   function onAuthDone() { setShowAuth(false); router.push('/join') }
   function handleCTA() { user ? router.push('/join') : openAuth() }
 
-  const css = `
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    html{scroll-behavior:smooth}
-    body{
-      background:#080C14;
-      color:#F1F5F9;
-      font-family:'Plus Jakarta Sans',system-ui,sans-serif;
-      overflow-x:hidden;
-      -webkit-font-smoothing:antialiased;
-    }
-    a{color:inherit;text-decoration:none}
-    button{font-family:inherit}
+  // ── Design tokens ──────────────────────────────────
+  // Warm off-white background, near-black text, stone borders
+  // One accent: dark charcoal for buttons
+  // No gradients. No glassmorphism. No purple.
+  var bg      = '#F7F6F2'
+  var white   = '#FFFFFF'
+  var border  = '#E4E2DC'
+  var text    = '#1A1A18'
+  var text2   = '#6B6860'
+  var text3   = '#A8A59F'
+  var dark    = '#1A1A18'
 
-    @keyframes spin{to{transform:rotate(360deg)}}
-    @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-14px)}}
-    @keyframes glow-pulse{0%,100%{box-shadow:0 0 20px rgba(79,142,247,0.3)}50%{box-shadow:0 0 50px rgba(79,142,247,0.6),0 0 80px rgba(139,92,246,0.3)}}
-    @keyframes slide-up{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-    @keyframes live-ring{0%{box-shadow:0 0 0 0 rgba(16,185,129,0.6)}70%{box-shadow:0 0 0 9px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
-    @keyframes shimmer{0%{opacity:0.5}50%{opacity:1}100%{opacity:0.5}}
+  var css = [
+    '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}',
+    'html{scroll-behavior:smooth}',
+    'body{background:' + bg + ';color:' + text + ';font-family:"DM Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden;line-height:1.6}',
+    'a{color:inherit;text-decoration:none}',
+    'button{font-family:inherit;cursor:pointer}',
 
-    .float{animation:float 5s ease-in-out infinite}
-    .live-dot{
-      width:8px;height:8px;border-radius:50%;
-      background:#10B981;display:inline-block;flex-shrink:0;
-      animation:live-ring 2.5s ease-out infinite;
-    }
+    // Typography scale
+    '.d1{font-family:"Lora",Georgia,serif;font-size:clamp(36px,5.2vw,68px);font-weight:600;line-height:1.08;letter-spacing:-0.025em;color:' + text + '}',
+    '.d1 em{font-style:italic;font-weight:500}',
+    '.h2{font-family:"Lora",Georgia,serif;font-size:clamp(24px,3.2vw,40px);font-weight:600;line-height:1.18;letter-spacing:-0.015em;color:' + text + '}',
+    '.h3{font-family:"Lora",Georgia,serif;font-size:clamp(17px,1.8vw,21px);font-weight:600;line-height:1.3;color:' + text + '}',
+    '.body{font-size:15px;line-height:1.72;color:' + text2 + '}',
+    '.body-lg{font-size:17px;line-height:1.72;color:' + text2 + '}',
+    '.caption{font-size:12px;line-height:1.6;color:' + text3 + ';letter-spacing:0.06em;text-transform:uppercase;font-weight:600}',
+    '.mono{font-family:"Lora",Georgia,serif;font-size:clamp(32px,4vw,52px);font-weight:600;line-height:1;color:' + text + '}',
 
-    .nav-link{
-      padding:7px 14px;border-radius:9px;
-      color:#64748B;font-size:14px;font-weight:600;
-      transition:color 0.2s,background 0.2s;
-    }
-    .nav-link:hover{color:#F1F5F9;background:rgba(255,255,255,0.06)}
+    // Layout
+    '.wrap{max-width:1060px;margin:0 auto;padding:0 28px}',
+    '.section{padding:72px 0;border-top:1px solid ' + border + '}',
 
-    .btn-primary{
-      display:inline-flex;align-items:center;gap:8px;
-      padding:13px 28px;border-radius:13px;border:none;
-      background:linear-gradient(135deg,#4F8EF7,#8B5CF6);
-      color:#fff;font-weight:800;font-size:15px;cursor:pointer;
-      transition:transform 0.2s,box-shadow 0.2s;
-      white-space:nowrap;font-family:'Outfit',sans-serif;
-      box-shadow:0 4px 20px rgba(79,142,247,0.35);
-    }
-    .btn-primary:hover{transform:translateY(-2px);box-shadow:0 10px 36px rgba(79,142,247,0.55)}
+    // Nav
+    '.nav{position:fixed;top:0;left:0;right:0;z-index:500;height:56px;transition:background 0.25s,border-color 0.25s}',
+    '.nav-in{display:flex;align-items:center;justify-content:space-between;height:100%;gap:16px}',
+    '.nav-link{font-size:14px;color:' + text2 + ';font-weight:500;padding:6px 10px;border-radius:6px;transition:color 0.15s}',
+    '.nav-link:hover{color:' + text + '}',
 
-    .btn-ghost{
-      display:inline-flex;align-items:center;gap:8px;
-      padding:12px 24px;border-radius:13px;
-      border:1px solid rgba(255,255,255,0.1);
-      background:rgba(255,255,255,0.05);
-      color:#CBD5E1;font-weight:700;font-size:15px;cursor:pointer;
-      transition:all 0.2s;white-space:nowrap;
-      font-family:'Plus Jakarta Sans',sans-serif;
-    }
-    .btn-ghost:hover{background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.2);color:#F1F5F9}
+    // Buttons
+    '.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;transition:all 0.15s;white-space:nowrap;border:none;font-family:"DM Sans",sans-serif;text-decoration:none}',
+    '.btn-dark{background:' + dark + ';color:#FFFFFF}',
+    '.btn-dark:hover{background:#2D2D2B}',
+    '.btn-ghost{background:transparent;color:' + text + ';border:1px solid ' + border + '}',
+    '.btn-ghost:hover{border-color:#C8C5BC;background:' + white + '}',
+    '.btn-sm{padding:8px 16px;font-size:13px}',
 
-    .btn-sm{padding:9px 18px;font-size:13px;border-radius:10px}
+    // Cards
+    '.card{background:' + white + ';border:1px solid ' + border + ';border-radius:10px;padding:24px;transition:box-shadow 0.2s}',
+    '.card:hover{box-shadow:0 6px 24px rgba(26,26,24,0.07)}',
 
-    .card{
-      background:#0D1421;
-      border:1px solid rgba(255,255,255,0.06);
-      border-radius:20px;padding:26px;
-      transition:transform 0.3s,border-color 0.3s,box-shadow 0.3s;
-    }
-    .card:hover{
-      transform:translateY(-6px);
-      border-color:rgba(79,142,247,0.28);
-      box-shadow:0 28px 56px rgba(0,0,0,0.5);
-    }
+    // Table row
+    '.tr{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;padding:12px 0;border-bottom:1px solid ' + border + ';align-items:start}',
+    '.tr:last-child{border-bottom:none}',
 
-    .plan-card{
-      background:#0D1421;
-      border:1px solid rgba(255,255,255,0.07);
-      border-radius:22px;padding:30px;
-      transition:transform 0.3s,box-shadow 0.3s;
-      display:flex;flex-direction:column;
-    }
-    .plan-card:hover{transform:translateY(-6px);box-shadow:0 32px 64px rgba(0,0,0,0.5)}
+    // Steps
+    '.step-n{font-family:"Lora",Georgia,serif;font-size:36px;font-weight:600;color:' + border + ';line-height:1;margin-bottom:14px}',
 
-    .dot-grid{
-      background-image:radial-gradient(rgba(79,142,247,0.15) 1px,transparent 1px);
-      background-size:28px 28px;
-    }
+    // Plan card featured
+    '.plan-feature{border-color:' + text + ';box-shadow:0 0 0 1px ' + text + '}',
 
-    .gradient-text{
-      background:linear-gradient(135deg,#7CB9FF 0%,#A78BFA 50%,#34D399 100%);
-      -webkit-background-clip:text;
-      -webkit-text-fill-color:transparent;
-      background-clip:text;
-    }
+    // Responsive
+    '@media(max-width:760px){',
+    '  .hide-m{display:none!important}',
+    '  .col-m{flex-direction:column!important;align-items:stretch!important}',
+    '  .section{padding:52px 0}',
+    '  .wrap{padding:0 20px}',
+    '  .tr{grid-template-columns:1fr 1fr}',
+    '}',
+  ].join('\n')
 
-    .display{
-      font-family:'Outfit',sans-serif;
-      font-size:clamp(44px,8.5vw,96px);
-      font-weight:900;
-      line-height:0.95;
-      letter-spacing:-3px;
-    }
-    .h2{
-      font-family:'Outfit',sans-serif;
-      font-size:clamp(30px,4.5vw,56px);
-      font-weight:900;
-      line-height:1.05;
-      letter-spacing:-1.5px;
-    }
-    .overline{
-      font-family:'Outfit',sans-serif;
-      font-size:11px;font-weight:800;
-      letter-spacing:3px;text-transform:uppercase;
-    }
+  var features = [
+    { t: 'HD video call',           d: 'Works on Jio, Airtel, and most Wi-Fi connections. No app to download. Runs entirely in your browser.' },
+    { t: 'Automatic matching',      d: 'Pick your exam and subject. The system finds another student studying the same thing, usually in under 30 seconds.' },
+    { t: 'Streak tracking',         d: 'Every session you complete extends your streak. Break it and it resets to one. Paid users get shields that absorb a missed day.' },
+    { t: 'Leaderboard',             d: 'Weekly rankings by sessions completed and streak length. Resets every Monday.' },
+    { t: 'Session history',         d: 'Every session is logged with the subject, partner, and duration. Free users see the last five. Paid users see everything.' },
+    { t: 'Report and rating',       d: 'After every session you rate your partner and optionally report inappropriate behaviour. Reports are reviewed by the admin.' },
+    { t: 'Grace period',            d: 'The first two minutes of each session are free. Leave within that window and no credit is deducted from your account.' },
+    { t: 'Referral sessions',       d: 'Share your referral code. When someone signs up using it, both accounts receive one bonus session in each mode.' },
+  ]
 
-    @media(max-width:768px){
-      .hide-m{display:none!important}
-      .col-m{flex-direction:column!important;align-items:stretch!important}
-      .center-m{text-align:center!important}
-      .full-m{width:100%!important;justify-content:center!important}
-      .display{letter-spacing:-2px}
-    }
-  `
-
-  const features = [
-    { e: '📹', t: 'HD video call', d: 'Optimised for Jio, Airtel, Wi-Fi. Crystal clear on any phone in India.' },
-    { e: '🔥', t: 'Streak system', d: 'Study every day and build your streak. Miss a day and it resets. Paid users get shields.' },
-    { e: '🏆', t: 'Leaderboard', d: 'Weekly rankings by sessions and streak. Top students get a badge.' },
-    { e: '⚡', t: 'Priority matching', d: 'Paid users skip the queue and get matched before free users, every time.' },
-    { e: '📊', t: 'Session history', d: 'Full history for paid users. Free users see their last 5 sessions.' },
-    { e: '🛡️', t: 'Safe & moderated', d: 'One-tap report after any session. Team reviews and bans within hours.' },
-    { e: '🎯', t: 'Chapter selection', d: 'First 2 minutes to pick your chapter. Leave early — credit not deducted.' },
-    { e: '🔗', t: 'Refer & earn', d: 'Refer a friend and both of you get bonus sessions added instantly.' },
+  var plans = [
+    {
+      label: 'Free', price: 'Rs 0', sub: 'No card, no expiry',
+      featured: false,
+      items: ['10 one-on-one sessions', '10 group sessions', '30 minutes per session', 'Streak tracking', 'Leaderboard access'],
+      cta: user ? 'Go to app' : 'Start free', href: null
+    },
+    {
+      label: 'Plus', price: 'Rs 99', sub: 'per month, or Rs 199 for 3 months',
+      featured: true,
+      items: ['Unlimited sessions', '60 minutes per session', 'Priority matching queue', 'Full session history', '1 streak shield per month'],
+      cta: 'Get Plus', href: '/plans'
+    },
+    {
+      label: 'Pro', price: 'Rs 699', sub: 'per year — saves Rs 489 vs monthly',
+      featured: false,
+      items: ['Everything in Plus', 'Unlimited session length', '3 streak shields per month', 'Session summary after each session', 'Total study hours tracked', 'Pro badge on leaderboard'],
+      cta: 'Get Pro', href: '/plans'
+    },
   ]
 
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: css }} />
 
-      {showAuth && <AuthModal onClose={closeAuth} onDone={onAuthDone} />}
+      {showAuth ? <AuthModal onClose={closeAuth} onDone={onAuthDone} /> : null}
 
-      {/* ── NAVBAR ─────────────────────────── */}
-      <nav style={{
-        position: 'fixed', top: 0, left: 0, right: 0, zIndex: 200,
-        height: 60, padding: '0 20px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-        background: scrolled ? 'rgba(8,12,20,0.92)' : 'transparent',
-        backdropFilter: scrolled ? 'blur(24px)' : 'none',
-        borderBottom: scrolled ? '1px solid rgba(255,255,255,0.05)' : 'none',
-        transition: 'all 0.35s'
-      }}>
-        {/* Logo */}
-        <Link href="/" style={{ flexShrink: 0 }}>
-          <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 22, fontWeight: 900, color: '#F1F5F9', letterSpacing: -0.5 }}>
-            Focus<span className="gradient-text">Duo</span>
-          </span>
-        </Link>
+      {/* NAV */}
+      <nav className="nav" style={{ background: scrolled ? 'rgba(247,246,242,0.96)' : 'transparent', borderBottom: scrolled ? '1px solid ' + border : '1px solid transparent', backdropFilter: scrolled ? 'blur(10px)' : 'none' }}>
+        <div className="wrap">
+          <div className="nav-in">
+            <Link href="/" style={{ fontFamily: 'Lora, Georgia, serif', fontSize: 17, fontWeight: 600, color: text, letterSpacing: '-0.01em' }}>
+              FocusDuo
+            </Link>
 
-        {/* Links */}
-        <div className="hide-m" style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <Link href="/dashboard" className="nav-link">Dashboard</Link>
-          <Link href="/plans" className="nav-link">Plans</Link>
-          <Link href="/leaderboard" className="nav-link">Leaderboard</Link>
-        </div>
+            <div className="hide-m" style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+              <Link href="/dashboard" className="nav-link">Dashboard</Link>
+              <Link href="/plans" className="nav-link">Plans</Link>
+              <Link href="/leaderboard" className="nav-link">Leaderboard</Link>
+            </div>
 
-        {/* Auth */}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
-          {!ready ? (
-            <div style={{ width: 80, height: 34, borderRadius: 9, background: 'rgba(255,255,255,0.05)' }} />
-          ) : user ? (
-            <>
-              <div className="hide-m" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {user.photoURL && (
-                  <img
-                    src={user.photoURL}
-                    alt=""
-                    style={{ width: 28, height: 28, borderRadius: '50%', border: '2px solid rgba(79,142,247,0.5)' }}
-                  />
-                )}
-                <span style={{ fontSize: 13, color: '#94A3B8', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {(user.displayName || '').split(' ')[0] || 'You'}
-                </span>
-              </div>
-              <Link href="/join" className="btn-primary btn-sm">Study now →</Link>
-              <button onClick={doSignOut} className="btn-ghost btn-sm hide-m">Sign out</button>
-            </>
-          ) : (
-            <>
-              <button onClick={openAuth} className="btn-ghost btn-sm">Sign in</button>
-              <button onClick={openAuth} className="btn-primary btn-sm">Sign up free →</button>
-            </>
-          )}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {!ready ? (
+                <div style={{ width: 76, height: 32, borderRadius: 7, background: border }} />
+              ) : user ? (
+                <>
+                  <div className="hide-m" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {user.photoURL ? <img src={user.photoURL} alt="" style={{ width: 24, height: 24, borderRadius: '50%', border: '1px solid ' + border }} /> : null}
+                    <span style={{ fontSize: 13, color: text2, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {(user.displayName || '').split(' ')[0] || 'You'}
+                    </span>
+                  </div>
+                  <Link href="/join" className="btn btn-dark btn-sm">Start studying</Link>
+                  <button onClick={function() { signOut(auth) }} className="btn btn-ghost btn-sm hide-m">Sign out</button>
+                </>
+              ) : (
+                <>
+                  <button onClick={openAuth} className="btn btn-ghost btn-sm">Sign in</button>
+                  <button onClick={openAuth} className="btn btn-dark btn-sm">Get started</button>
+                </>
+              )}
+            </div>
+          </div>
         </div>
       </nav>
 
-      {/* ── HERO ───────────────────────────── */}
-      <section className="dot-grid" style={{
-        minHeight: '100vh',
-        display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        padding: '100px 24px 80px',
-        position: 'relative', overflow: 'hidden'
-      }}>
-        {/* Ambient blobs */}
-        <div style={{ position: 'absolute', top: '8%', left: '-8%', width: 700, height: 700, borderRadius: '50%', background: 'radial-gradient(circle, rgba(79,142,247,0.16) 0%, transparent 65%)', filter: 'blur(60px)', pointerEvents: 'none' }} />
-        <div style={{ position: 'absolute', bottom: '0%', right: '-10%', width: 600, height: 600, borderRadius: '50%', background: 'radial-gradient(circle, rgba(139,92,246,0.14) 0%, transparent 65%)', filter: 'blur(60px)', pointerEvents: 'none' }} />
-        <div style={{ position: 'absolute', top: '45%', left: '30%', width: 500, height: 300, background: 'radial-gradient(ellipse, rgba(16,185,129,0.06) 0%, transparent 70%)', filter: 'blur(40px)', pointerEvents: 'none' }} />
+      {/* HERO */}
+      <section style={{ paddingTop: 128, paddingBottom: 80, background: bg }}>
+        <div className="wrap">
+          <Reveal delay={0}>
+            <p className="caption" style={{ marginBottom: 22, color: text3 }}>For JEE and NEET students in India</p>
+          </Reveal>
 
-        <div style={{ maxWidth: 1120, width: '100%', position: 'relative', zIndex: 1 }}>
+          <Reveal delay={70}>
+            <h1 className="d1" style={{ marginBottom: 24, maxWidth: 680 }}>
+              A study partner,<br />found in 30 seconds.
+            </h1>
+          </Reveal>
 
-          {/* Live badge */}
-          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 36, animation: 'slide-up 0.5s ease both' }}>
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: 9,
-              padding: '8px 20px', borderRadius: 999,
-              border: '1px solid rgba(16,185,129,0.35)',
-              background: 'rgba(16,185,129,0.08)',
-              fontFamily: 'Outfit, sans-serif',
-              fontSize: 13, fontWeight: 700, color: '#34D399'
-            }}>
-              <span className="live-dot" />
-              Students studying right now · India 🇮🇳
-            </div>
-          </div>
-
-          {/* Two columns */}
-          <div style={{ display: 'flex', gap: 60, alignItems: 'center', flexWrap: 'wrap' }} className="col-m">
-
-            {/* Left */}
-            <div style={{ flex: '1 1 440px', animation: 'slide-up 0.6s ease 0.1s both' }}>
-              <h1 className="display center-m">
-                Stop studying<br />
-                <span className="gradient-text">alone.</span>
-              </h1>
-
-              <p style={{
-                fontSize: 'clamp(15px, 1.8vw, 18px)',
-                color: '#64748B', lineHeight: 1.75, marginTop: 22, maxWidth: 460,
-                fontFamily: 'Plus Jakarta Sans, sans-serif'
-              }}>
-                Get matched with a serious JEE or NEET student in under 30 seconds.
-                Video call inside the site. Stay accountable. Actually get work done.
-              </p>
-
-              <div style={{ display: 'flex', gap: 12, marginTop: 32, flexWrap: 'wrap' }} className="col-m">
-                <button onClick={handleCTA} className="btn-primary" style={{ fontSize: 16, padding: '15px 32px' }}>
-                  {user ? 'Start studying now →' : 'Get started free →'}
-                </button>
-                {!user && (
-                  <button onClick={openAuth} className="btn-ghost">Sign in</button>
-                )}
-                {user && (
-                  <Link href="/dashboard" className="btn-ghost">My dashboard</Link>
-                )}
-              </div>
-
-              {/* Trust chips */}
-              <div style={{ display: 'flex', gap: 8, marginTop: 26, flexWrap: 'wrap' }}>
-                {['✅ 10 free sessions', '⚡ Matched in 30s', '🔒 Google sign in', '📱 Mobile ready'].map(t => (
-                  <div key={t} style={{
-                    padding: '5px 13px', borderRadius: 999, fontSize: 12, fontWeight: 600,
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.07)',
-                    color: '#374151'
-                  }}>
-                    {t}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Right — match card */}
-            <div className="float" style={{
-              flex: '1 1 360px', display: 'flex', justifyContent: 'center',
-              animation: 'slide-up 0.7s ease 0.2s both'
-            }}>
-              <MatchCard user={user} openAuth={openAuth} />
-            </div>
-          </div>
-        </div>
-
-        {/* Scroll indicator */}
-        <div style={{
-          position: 'absolute', bottom: 28, left: '50%', transform: 'translateX(-50%)',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-          opacity: 0.25, animation: 'float 3s ease-in-out infinite'
-        }}>
-          <div style={{ width: 1, height: 36, background: 'linear-gradient(to bottom, transparent, #64748B)' }} />
-          <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 3, color: '#64748B', textTransform: 'uppercase', fontFamily: 'Outfit, sans-serif' }}>SCROLL</span>
-        </div>
-      </section>
-
-      {/* ── STATS ──────────────────────────── */}
-      <section style={{ padding: '60px 24px', borderTop: '1px solid rgba(255,255,255,0.05)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-        <FadeIn>
-          <div style={{ maxWidth: 900, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 40, textAlign: 'center' }}>
-            {[
-              { p: '', n: 10, s: '+', l: 'Free sessions to start' },
-              { p: '', n: 30, s: 's', l: 'Average match time' },
-              { p: '₹', n: 99, s: '', l: 'Per month, unlimited' },
-              { p: '', n: 4, s: '', l: 'Subjects covered' },
-            ].map(({ p, n, s, l }) => (
-              <div key={l}>
-                <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 'clamp(38px, 5vw, 64px)', fontWeight: 900, lineHeight: 1 }}>
-                  <span className="gradient-text">
-                    <Count to={n} prefix={p} suffix={s} />
-                  </span>
-                </div>
-                <div style={{ color: '#374151', fontSize: 13, marginTop: 10, fontWeight: 600 }}>{l}</div>
-              </div>
-            ))}
-          </div>
-        </FadeIn>
-      </section>
-
-      {/* ── HOW IT WORKS ───────────────────── */}
-      <section style={{ padding: '100px 24px', maxWidth: 1100, margin: '0 auto' }}>
-        <FadeIn>
-          <div style={{ textAlign: 'center', marginBottom: 60 }}>
-            <p className="overline" style={{ color: '#4F8EF7', marginBottom: 14 }}>Simple as it gets</p>
-            <h2 className="h2">How FocusDuo works</h2>
-          </div>
-        </FadeIn>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
-          {[
-            { n: '01', e: '📚', t: 'Pick your subject', d: 'Choose your exam, subject, and mode — 1-on-1 or group. Takes 10 seconds.', delay: 0 },
-            { n: '02', e: '⚡', t: 'Match in seconds', d: 'Paired with a serious student in the same subject. Usually under 30 seconds.', delay: 80 },
-            { n: '03', e: '🎯', t: 'Set your chapter', d: 'First 2 minutes to agree on chapter. Leave early and no credit is used.', delay: 160 },
-            { n: '04', e: '🔥', t: 'Build your streak', d: 'Complete sessions to build your streak. Climb the leaderboard every week.', delay: 240 },
-          ].map(({ n, e, t, d, delay }) => (
-            <FadeIn key={n} delay={delay}>
-              <div className="card">
-                <p className="overline" style={{ color: 'rgba(255,255,255,0.15)', marginBottom: 18 }}>{n}</p>
-                <div style={{ fontSize: 36, marginBottom: 14 }}>{e}</div>
-                <h3 style={{ fontFamily: 'Outfit, sans-serif', fontSize: 18, fontWeight: 800, marginBottom: 10, lineHeight: 1.2, color: '#F1F5F9' }}>{t}</h3>
-                <p style={{ color: '#64748B', lineHeight: 1.75, fontSize: 14 }}>{d}</p>
-              </div>
-            </FadeIn>
-          ))}
-        </div>
-      </section>
-
-      {/* ── VS DISCORD ─────────────────────── */}
-      <section style={{ padding: '100px 24px', background: 'linear-gradient(180deg, transparent, rgba(79,142,247,0.04), transparent)' }}>
-        <div style={{ maxWidth: 780, margin: '0 auto' }}>
-          <FadeIn>
-            <div style={{ textAlign: 'center', marginBottom: 48 }}>
-              <p className="overline" style={{ color: '#A78BFA', marginBottom: 14 }}>Honest comparison</p>
-              <h2 className="h2">Why not Discord or Zoom?</h2>
-              <p style={{ color: '#64748B', marginTop: 14, fontSize: 16, lineHeight: 1.75 }}>
-                Those are free. But they have one problem FocusDuo actually solves.
-              </p>
-            </div>
-          </FadeIn>
-          <FadeIn delay={100}>
-            <div style={{ background: '#0D1421', borderRadius: 22, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.06)', boxShadow: '0 32px 80px rgba(0,0,0,0.5)' }}>
-              {/* Table header */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 1fr', padding: '18px 28px', background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                <div style={{ textAlign: 'center', fontFamily: 'Outfit, sans-serif', fontWeight: 900, color: '#7CB9FF', fontSize: 15 }}>FocusDuo ✅</div>
-                <div />
-                <div style={{ textAlign: 'center', fontWeight: 700, color: '#374151', fontSize: 14 }}>Discord / Zoom</div>
-              </div>
-              {/* Rows */}
-              <div style={{ padding: '6px 28px 20px' }}>
-                {[
-                  { f: 'Finding a partner', u: 'Auto-matched in 30s', t: 'Beg in a server', w: 'us' },
-                  { f: 'Accountability', u: 'Timer + streak system', t: 'Nothing', w: 'us' },
-                  { f: 'Distractions', u: 'Study-only space', t: 'Memes & gaming', w: 'us' },
-                  { f: 'Cost', u: 'Free tier available', t: 'Free', w: 'them' },
-                  { f: 'Mobile quality', u: 'Optimised for India', t: 'Heavy & laggy', w: 'us' },
-                  { f: 'Reporting', u: 'One-tap report system', t: 'Nothing', w: 'us' },
-                  { f: 'Session tracking', u: 'History + streaks', t: 'No tracking', w: 'us' },
-                ].map(({ f, u, t, w }) => (
-                  <div key={f} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 1fr', gap: 8, alignItems: 'center', padding: '9px 0', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-                    <div style={{
-                      padding: '8px 12px', borderRadius: 10, textAlign: 'center', fontWeight: 700, fontSize: 13,
-                      background: w === 'us' ? 'rgba(16,185,129,0.1)' : 'rgba(255,255,255,0.03)',
-                      color: w === 'us' ? '#34D399' : '#64748B',
-                      border: w === 'us' ? '1px solid rgba(16,185,129,0.22)' : '1px solid transparent'
-                    }}>{u}</div>
-                    <div style={{ textAlign: 'center', color: '#1E2A3A', fontSize: 11, fontWeight: 700, fontFamily: 'Outfit, sans-serif' }}>{f}</div>
-                    <div style={{ padding: '8px 12px', borderRadius: 10, textAlign: 'center', fontWeight: 700, fontSize: 13, background: 'rgba(255,255,255,0.03)', color: '#374151', border: '1px solid transparent' }}>{t}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </FadeIn>
-          <FadeIn delay={200}>
-            <p style={{ textAlign: 'center', marginTop: 28, color: '#374151', fontSize: 15, lineHeight: 1.8 }}>
-              Discord finds you a distraction.<br />
-              <strong style={{ color: '#F1F5F9' }}>FocusDuo finds you a study partner.</strong>
+          <Reveal delay={140}>
+            <p className="body-lg" style={{ maxWidth: 500, marginBottom: 36 }}>
+              Pick your subject, get matched with a real student studying the same thing, and study together on a video call — directly in the browser.
             </p>
-          </FadeIn>
-        </div>
-      </section>
+          </Reveal>
 
-      {/* ── FEATURES ───────────────────────── */}
-      <section style={{ padding: '100px 24px', maxWidth: 1100, margin: '0 auto' }}>
-        <FadeIn>
-          <div style={{ textAlign: 'center', marginBottom: 60 }}>
-            <p className="overline" style={{ color: '#A78BFA', marginBottom: 14 }}>Everything you need</p>
-            <h2 className="h2">Built for serious students</h2>
-          </div>
-        </FadeIn>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 14 }}>
-          {features.map(({ e, t, d }, i) => (
-            <FadeIn key={t} delay={i * 55}>
-              <div className="card">
-                <div style={{ fontSize: 34, marginBottom: 14 }}>{e}</div>
-                <h3 style={{ fontFamily: 'Outfit, sans-serif', fontSize: 16, fontWeight: 800, marginBottom: 9, color: '#F1F5F9', lineHeight: 1.2 }}>{t}</h3>
-                <p style={{ color: '#64748B', lineHeight: 1.75, fontSize: 14 }}>{d}</p>
-              </div>
-            </FadeIn>
-          ))}
-        </div>
-      </section>
-
-      {/* ── PRICING ────────────────────────── */}
-      <section style={{ padding: '100px 24px', background: 'rgba(13,20,33,0.7)' }}>
-        <div style={{ maxWidth: 980, margin: '0 auto' }}>
-          <FadeIn>
-            <div style={{ textAlign: 'center', marginBottom: 56 }}>
-              <p className="overline" style={{ color: '#34D399', marginBottom: 14 }}>Honest pricing</p>
-              <h2 className="h2">Start free. Upgrade when ready.</h2>
-              <p style={{ color: '#64748B', marginTop: 14, fontSize: 16 }}>
-                Pay via UPI. No card. No auto-charge. Ever.
-              </p>
-            </div>
-          </FadeIn>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 14 }}>
-
-            {/* Free */}
-            <FadeIn delay={0}>
-              <div className="plan-card">
-                <p className="overline" style={{ color: '#374151', marginBottom: 10 }}>Free forever</p>
-                <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 48, fontWeight: 900, marginBottom: 4, lineHeight: 1 }}>₹0</div>
-                <p style={{ color: '#374151', fontSize: 14, marginBottom: 24 }}>No card ever</p>
-                <div style={{ flex: 1 }}>
-                  {['10 one-on-one sessions', '10 group sessions', '30 min per session', 'Streak tracking', 'Leaderboard access'].map(f => (
-                    <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: '#64748B', marginBottom: 10 }}>
-                      <span style={{ color: '#34D399', flexShrink: 0, fontSize: 12 }}>✓</span>{f}
-                    </div>
-                  ))}
-                </div>
-                <div style={{ marginTop: 24 }}>
-                  <button onClick={handleCTA} className="btn-ghost" style={{ width: '100%', justifyContent: 'center', fontSize: 14 }}>
-                    {user ? 'Go study →' : 'Start free →'}
-                  </button>
-                </div>
-              </div>
-            </FadeIn>
-
-            {/* Plus — featured */}
-            <FadeIn delay={80}>
-              <div className="plan-card" style={{
-                border: '1px solid rgba(79,142,247,0.5)',
-                position: 'relative', overflow: 'hidden',
-                animation: 'glow-pulse 4s ease-in-out infinite'
-              }}>
-                {/* Top stripe */}
-                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: 'linear-gradient(90deg, #4F8EF7, #8B5CF6)' }} />
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-                  <p className="overline" style={{ color: '#7CB9FF' }}>Plus</p>
-                  <div style={{ padding: '4px 12px', borderRadius: 999, fontSize: 11, fontWeight: 800, background: 'linear-gradient(90deg, #4F8EF7, #8B5CF6)', color: '#fff' }}>
-                    POPULAR
-                  </div>
-                </div>
-                <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 48, fontWeight: 900, marginBottom: 4, lineHeight: 1 }}>
-                  <span className="gradient-text">₹99</span>
-                </div>
-                <p style={{ color: '#374151', fontSize: 14, marginBottom: 24 }}>per month · ₹199 for 3 months</p>
-                <div style={{ flex: 1 }}>
-                  {['Unlimited sessions', '60 min per session', '⚡ Priority matching queue', 'Full session history', '1 streak shield / month'].map(f => (
-                    <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: '#CBD5E1', marginBottom: 10 }}>
-                      <span style={{ color: '#34D399', flexShrink: 0, fontSize: 12 }}>✓</span>{f}
-                    </div>
-                  ))}
-                </div>
-                <div style={{ marginTop: 24 }}>
-                  <Link href="/plans" className="btn-primary" style={{ width: '100%', justifyContent: 'center', fontSize: 14, display: 'flex' }}>
-                    Upgrade for ₹99 →
-                  </Link>
-                </div>
-              </div>
-            </FadeIn>
-
-            {/* Pro */}
-            <FadeIn delay={160}>
-              <div className="plan-card" style={{ border: '1px solid rgba(245,158,11,0.25)' }}>
-                <p className="overline" style={{ color: '#F59E0B', marginBottom: 10 }}>Pro · Best value</p>
-                <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 48, fontWeight: 900, marginBottom: 4, lineHeight: 1 }}>
-                  <span style={{ background: 'linear-gradient(135deg, #F59E0B, #EF4444)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>₹699</span>
-                </div>
-                <p style={{ color: '#374151', fontSize: 14, marginBottom: 4 }}>per year · <s>₹1188</s></p>
-                <p style={{ color: '#34D399', fontSize: 12, fontWeight: 700, marginBottom: 20 }}>Save ₹489 vs monthly</p>
-                <div style={{ flex: 1 }}>
-                  {['Everything in Plus', 'Unlimited session length', '3 streak shields / month', 'Pro badge on leaderboard', 'Early access to new features'].map(f => (
-                    <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: '#CBD5E1', marginBottom: 10 }}>
-                      <span style={{ color: '#F59E0B', flexShrink: 0, fontSize: 12 }}>✓</span>{f}
-                    </div>
-                  ))}
-                </div>
-                <div style={{ marginTop: 24 }}>
-                  <Link href="/plans" className="btn-ghost" style={{ width: '100%', justifyContent: 'center', fontSize: 14, display: 'flex', borderColor: 'rgba(245,158,11,0.3)' }}>
-                    Get yearly →
-                  </Link>
-                </div>
-              </div>
-            </FadeIn>
-          </div>
-
-          {/* Early bird */}
-          <FadeIn delay={240}>
-            <div style={{
-              padding: '22px 28px', borderRadius: 18,
-              background: 'linear-gradient(135deg, rgba(239,68,68,0.1), rgba(139,92,246,0.1))',
-              border: '1px solid rgba(239,68,68,0.25)',
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16
-            }}>
-              <div>
-                <p style={{ fontWeight: 900, fontSize: 16, marginBottom: 6, color: '#F1F5F9' }}>
-                  🔥 Early Bird — <span className="gradient-text">₹199/year</span>
-                  <span style={{ fontSize: 13, color: '#374151', fontWeight: 500 }}> · First 100 buyers only</span>
-                </p>
-                <p style={{ color: '#64748B', fontSize: 14 }}>Full Pro plan for ₹199. Locked in forever even when price increases.</p>
-              </div>
-              <Link href="/plans" className="btn-primary" style={{ background: 'linear-gradient(135deg, #EF4444, #8B5CF6)', whiteSpace: 'nowrap' }}>
-                Claim ₹199 deal →
-              </Link>
-            </div>
-          </FadeIn>
-        </div>
-      </section>
-
-      {/* ── FINAL CTA ──────────────────────── */}
-      <section style={{ padding: '100px 24px', position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(ellipse at 50% 100%, rgba(79,142,247,0.1) 0%, transparent 65%)', pointerEvents: 'none' }} />
-        <FadeIn>
-          <div style={{ textAlign: 'center', maxWidth: 620, margin: '0 auto', position: 'relative' }}>
-            <h2 className="h2">
-              Your rank won't improve<br />
-              <span className="gradient-text">studying alone.</span>
-            </h2>
-            <p style={{ color: '#64748B', fontSize: 18, lineHeight: 1.75, marginTop: 20, marginBottom: 36 }}>
-              Every topper has an accountability partner.
-              FocusDuo gives you one in 30 seconds. Free.
-            </p>
-            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
-              <button onClick={handleCTA} className="btn-primary" style={{ fontSize: 17, padding: '16px 36px' }}>
-                {user ? 'Start studying now →' : 'Get started free →'}
+          <Reveal delay={200}>
+            <div className="col-m" style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+              <button onClick={handleCTA} className="btn btn-dark" style={{ fontSize: 15, padding: '12px 26px' }}>
+                {user ? 'Start studying' : 'Get started free'}
               </button>
-              <Link href="/plans" className="btn-ghost" style={{ fontSize: 16 }}>See plans</Link>
+              <Link href="/plans" className="btn btn-ghost" style={{ fontSize: 15, padding: '12px 22px' }}>
+                See plans
+              </Link>
             </div>
-            <p style={{ color: '#1E2A3A', fontSize: 11, marginTop: 22, letterSpacing: 2.5, fontFamily: 'Outfit, sans-serif', fontWeight: 800, textTransform: 'uppercase' }}>
-              JEE · NEET · Physics · Chemistry · Math · Biology
+          </Reveal>
+
+          <Reveal delay={250}>
+            <p style={{ fontSize: 13, color: text3 }}>
+              10 free sessions included. No card required.
             </p>
-          </div>
-        </FadeIn>
+          </Reveal>
+        </div>
       </section>
 
-      {/* ── FOOTER ─────────────────────────── */}
-      <footer style={{ borderTop: '1px solid rgba(255,255,255,0.05)', padding: '28px 24px' }}>
-        <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
-          <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 900, fontSize: 18, color: '#F1F5F9' }}>
-            Focus<span className="gradient-text">Duo</span>
+      {/* STATS */}
+      <section className="section" style={{ background: white }}>
+        <div className="wrap">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 0 }}>
+            {[
+              { n: '30s',    l: 'Average match time' },
+              { n: '10',     l: 'Free sessions to start' },
+              { n: '4',      l: 'Subjects covered' },
+              { n: 'Rs 99',  l: 'Per month unlimited' },
+            ].map(function (s, i) {
+              return (
+                <Reveal key={s.l} delay={i * 55}>
+                  <div style={{ padding: '8px 0 8px ' + (i === 0 ? '0' : '32px'), borderLeft: i > 0 ? '1px solid ' + border : 'none' }}>
+                    <div className="mono" style={{ marginBottom: 8 }}>{s.n}</div>
+                    <p style={{ fontSize: 13, color: text3 }}>{s.l}</p>
+                  </div>
+                </Reveal>
+              )
+            })}
           </div>
-          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-            {[['Dashboard', '/dashboard'], ['Plans', '/plans'], ['Join', '/join'], ['Leaderboard', '/leaderboard']].map(([l, h]) => (
-              <Link key={l} href={h} style={{ color: '#374151', fontSize: 14, fontWeight: 500, transition: 'color 0.2s' }}
-                onMouseEnter={e => { e.currentTarget.style.color = '#64748B' }}
-                onMouseLeave={e => { e.currentTarget.style.color = '#374151' }}
-              >
-                {l}
-              </Link>
-            ))}
-          </div>
-          <p style={{ color: '#1E2A3A', fontSize: 12 }}>© 2025 FocusDuo · For JEE &amp; NEET students</p>
         </div>
-      </footer>
+      </section>
+
+      {/* HOW IT WORKS */}
+      <section className="section" style={{ background: bg }}>
+        <div className="wrap">
+          <Reveal>
+            <p className="caption" style={{ marginBottom: 10 }}>How it works</p>
+            <h2 className="h2" style={{ marginBottom: 48, maxWidth: 440 }}>Four steps from the homepage to studying.</h2>
+          </Reveal>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 2 }}>
+            {[
+              { n: '01', t: 'Pick your subject',  d: 'Select your exam, subject, and whether you want a one-on-one or a group session.' },
+              { n: '02', t: 'Get matched',         d: 'The system pairs you with another student on the same subject. Usually under 30 seconds.' },
+              { n: '03', t: 'Set your chapter',    d: 'The first two minutes are for agreeing on what chapter you are covering. Leave in this window and your session credit is not used.' },
+              { n: '04', t: 'Study together',      d: 'Video call opens inside the site. Both students study on camera. Session ends at 30 minutes for free users.' },
+            ].map(function (step, i) {
+              return (
+                <Reveal key={step.n} delay={i * 70}>
+                  <div className="card" style={{ background: white, height: '100%' }}>
+                    <div className="step-n">{step.n}</div>
+                    <h3 className="h3" style={{ marginBottom: 10 }}>{step.t}</h3>
+                    <p className="body" style={{ fontSize: 14 }}>{step.d}</p>
+                  </div>
+                </Reveal>
+              )
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* COMPARISON */}
+      <section className="section" style={{ background: white }}>
+        <div className="wrap">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 72, alignItems: 'start' }} className="col-m">
+            <Reveal>
+              <div>
+                <p className="caption" style={{ marginBottom: 12 }}>The difference</p>
+                <h2 className="h2" style={{ marginBottom: 20 }}>Why not Discord or Zoom?</h2>
+                <p className="body" style={{ marginBottom: 16 }}>
+                  Both are free and students already use them. The problem is neither was built for studying with a stranger.
+                </p>
+                <p className="body" style={{ marginBottom: 16 }}>
+                  On Discord you need to find the right server and hope someone is available. On Zoom you need a link and someone to share it with. Both require knowing someone already.
+                </p>
+                <p className="body">
+                  FocusDuo removes that step. You pick your subject and the system finds someone for you.
+                </p>
+              </div>
+            </Reveal>
+
+            <Reveal delay={80}>
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr 1fr', gap: 12, paddingBottom: 10, borderBottom: '1px solid ' + border }}>
+                  <span className="caption" style={{ paddingBottom: 0 }}> </span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: text }}>FocusDuo</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: text3 }}>Discord / Zoom</span>
+                </div>
+                {[
+                  { f: 'Finding a partner',    a: 'Automatic in 30 seconds',      b: 'Manual, need to know someone' },
+                  { f: 'Distractions',         a: 'Study-only environment',        b: 'Memes, games, notifications' },
+                  { f: 'Accountability',       a: 'Timer, streak, history',        b: 'None built in' },
+                  { f: 'Reporting',            a: 'One tap after every session',   b: 'Usually nothing' },
+                  { f: 'Session tracking',     a: 'Full history with streaks',     b: 'No tracking' },
+                ].map(function (row) {
+                  return (
+                    <div key={row.f} style={{ display: 'grid', gridTemplateColumns: '130px 1fr 1fr', gap: 12, padding: '11px 0', borderBottom: '1px solid ' + border, alignItems: 'start' }}>
+                      <span style={{ fontSize: 12, color: text3 }}>{row.f}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: text, lineHeight: 1.5 }}>{row.a}</span>
+                      <span style={{ fontSize: 13, color: text3, lineHeight: 1.5 }}>{row.b}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      {/* FEATURES */}
+      <section className="section" style={{ background: bg }}>
+        <div className="wrap">
+          <Reveal>
+            <p className="caption" style={{ marginBottom: 10 }}>Features</p>
+            <h2 className="h2" style={{ marginBottom: 48, maxWidth: 380 }}>Built for JEE and NEET students.</h2>
+          </Reveal>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 2 }}>
+            {features.map(function (f, i) {
+              return (
+                <Reveal key={f.t} delay={i * 45}>
+                  <div className="card" style={{ background: white, height: '100%' }}>
+                    <h3 className="h3" style={{ marginBottom: 10, fontSize: 16 }}>{f.t}</h3>
+                    <p className="body" style={{ fontSize: 14 }}>{f.d}</p>
+                  </div>
+                </Reveal>
+              )
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* PRICING */}
+      <section className="section" style={{ background: white }}>
+        <div className="wrap">
+          <Reveal>
+            <p className="caption" style={{ marginBottom: 10 }}>Pricing</p>
+            <h2 className="h2" style={{ marginBottom: 10, maxWidth: 380 }}>Free to start. Pay when ready.</h2>
+            <p className="body" style={{ marginBottom: 48 }}>Payment via UPI. No card. No automatic charge ever.</p>
+          </Reveal>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 2 }}>
+            {plans.map(function (plan, i) {
+              return (
+                <Reveal key={plan.label} delay={i * 70}>
+                  <div
+                    className={'card' + (plan.featured ? ' plan-feature' : '')}
+                    style={{ background: plan.featured ? white : bg, display: 'flex', flexDirection: 'column', height: '100%' }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+                      <p className="caption">{plan.label}</p>
+                      {plan.featured ? (
+                        <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 4, background: text, color: white, letterSpacing: '0.04em' }}>
+                          Popular
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div style={{ fontFamily: 'Lora, Georgia, serif', fontSize: 38, fontWeight: 600, lineHeight: 1, color: text, marginBottom: 6 }}>
+                      {plan.price}
+                    </div>
+                    <p style={{ fontSize: 13, color: text3, marginBottom: 24 }}>{plan.sub}</p>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 9, marginBottom: 28, flex: 1 }}>
+                      {plan.items.map(function (item) {
+                        return (
+                          <div key={item} style={{ display: 'flex', alignItems: 'baseline', gap: 10, fontSize: 14, color: plan.featured ? text : text2 }}>
+                            <span style={{ color: text3, fontSize: 11, flexShrink: 0 }}>—</span>
+                            {item}
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {plan.href ? (
+                      <Link href={plan.href} className={'btn ' + (plan.featured ? 'btn-dark' : 'btn-ghost')} style={{ justifyContent: 'center', display: 'flex', fontSize: 14 }}>
+                        {plan.cta}
+                      </Link>
+                    ) : (
+                      <button onClick={handleCTA} className="btn btn-ghost" style={{ justifyContent: 'center', fontSize: 14 }}>
+                        {plan.cta}
+                      </button>
+                    )}
+                  </div>
+                </Reveal>
+              )
+            })}
+          </div>
+
+          <Reveal delay={180}>
+            <div style={{ marginTop: 14, padding: '16px 22px', borderRadius: 9, border: '1px solid ' + border, background: bg, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+              <div>
+                <span style={{ fontSize: 14, fontWeight: 600, color: text }}>Early buyer — Rs 199 for a full year.</span>
+                <span style={{ fontSize: 14, color: text2, marginLeft: 8 }}>First 100 buyers. Full Pro access.</span>
+              </div>
+              <Link href="/plans" className="btn btn-dark btn-sm">Claim offer</Link>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* FINAL CTA */}
+      <section className="section" style={{ background: bg }}>
+        <div className="wrap">
+          <Reveal>
+            <div style={{ maxWidth: 520 }}>
+              <h2 className="h2" style={{ marginBottom: 18 }}>Studying alone is harder than it needs to be.</h2>
+              <p className="body-lg" style={{ marginBottom: 32 }}>
+                Every session on FocusDuo is with a real student, studying the same subject, at the same time as you.
+                It costs nothing to try.
+              </p>
+              <div className="col-m" style={{ display: 'flex', gap: 10 }}>
+                <button onClick={handleCTA} className="btn btn-dark" style={{ fontSize: 15, padding: '12px 26px' }}>
+                  {user ? 'Go to app' : 'Get started free'}
+                </button>
+                <Link href="/plans" className="btn btn-ghost" style={{ fontSize: 15, padding: '12px 22px' }}>
+                  View plans
+                </Link>
+              </div>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* FOOTER */}
+      <div style={{ borderTop: '1px solid ' + border, background: white }}>
+        <div className="wrap">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16, padding: '28px 0' }}>
+            <span style={{ fontFamily: 'Lora, Georgia, serif', fontWeight: 600, fontSize: 16, color: text }}>FocusDuo</span>
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+              {[['Dashboard','/dashboard'],['Plans','/plans'],['Join','/join'],['Leaderboard','/leaderboard'],['Privacy','/privacy']].map(function (item) {
+                return (
+                  <Link key={item[0]} href={item[1]} style={{ fontSize: 13, color: text3, transition: 'color 0.15s' }}
+                    onMouseEnter={function (e) { e.currentTarget.style.color = text2 }}
+                    onMouseLeave={function (e) { e.currentTarget.style.color = text3 }}
+                  >
+                    {item[0]}
+                  </Link>
+                )
+              })}
+            </div>
+            <span style={{ fontSize: 12, color: text3 }}>JEE · NEET · India</span>
+          </div>
+        </div>
+      </div>
     </>
   )
-}
+          }
