@@ -6,493 +6,322 @@ import Link from 'next/link'
 import { auth, db, googleProvider } from '../../lib/firebase'
 import { signInWithPopup } from 'firebase/auth'
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  runTransaction,
-  serverTimestamp,
-  setDoc,
-  deleteDoc
+  collection, doc, getDoc, getDocs, onSnapshot,
+  runTransaction, serverTimestamp, setDoc, deleteDoc
 } from 'firebase/firestore'
 import { ensureUserProfile, getEffectivePlanId, remainingForMode } from '../../lib/subscriptions'
 import { getLiveHoursStatus, normalizeLiveHours } from '../../lib/liveHours'
 
-function clean(v = '') {
-  return String(v).replace(/[^a-zA-Z0-9_-]/g, '_')
-}
+var bg     = '#F7F6F2'
+var white  = '#FFFFFF'
+var border = '#E4E2DC'
+var text   = '#1A1A18'
+var text2  = '#6B6860'
+var text3  = '#A8A59F'
+var dark   = '#1A1A18'
 
-function queueCollectionName(exam, subject, mode) {
-  return `queue_${clean(exam)}_${clean(subject)}_${clean(mode)}`
-}
+function clean(v) { return String(v || '').replace(/[^a-zA-Z0-9_-]/g, '_') }
+function queueCol(exam, subject, mode) { return 'queue_' + clean(exam) + '_' + clean(subject) + '_' + clean(mode) }
 
 export default function JoinPage() {
-  const router = useRouter()
+  var router = useRouter()
+  var [exam, setExam]       = useState('JEE')
+  var [subject, setSubject] = useState('Physics')
+  var [mode, setMode]       = useState('one-on-one')
+  var [status, setStatus]   = useState('idle')
+  var [accountInfo, setAccountInfo] = useState(null)
+  var [liveHours, setLiveHours]     = useState(null)
+  var [waitlistCount, setWaitlistCount] = useState(0)
 
-  const [exam, setExam] = useState('JEE')
-  const [subject, setSubject] = useState('Physics')
-  const [mode, setMode] = useState('one-on-one')
-  const [status, setStatus] = useState('idle')
-  const [accountInfo, setAccountInfo] = useState(null)
-  const [liveHours, setLiveHours] = useState(null)
-  const [waitlistCount, setWaitlistCount] = useState(0)
+  var myQueueRef        = useRef(null)
+  var queueListenerRef  = useRef(null)
+  var ownDocListenerRef = useRef(null)
+  var waitlistUnsubRef  = useRef(null)
+  var matchingRef       = useRef(false)
+  var redirectedRef     = useRef(false)
+  var isPaidRef         = useRef(false)
 
-  const myQueueRef = useRef(null)
-  const queueListenerRef = useRef(null)
-  const ownDocListenerRef = useRef(null)
-  const waitlistUnsubRef = useRef(null)
-  const matchingRef = useRef(false)
-  const redirectedRef = useRef(false)
-  const isPaidRef = useRef(false)
-
-  // Live hours listener
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'siteConfig', 'liveHours'), snap => {
-      const data = snap.exists() ? snap.data() : null
-      setLiveHours(normalizeLiveHours(data || undefined))
+  useEffect(function() {
+    var unsub = onSnapshot(doc(db, 'siteConfig', 'liveHours'), function(snap) {
+      setLiveHours(normalizeLiveHours(snap.exists() ? snap.data() : undefined))
     })
-    return () => unsub()
+    return function() { unsub() }
   }, [])
 
-  // Waitlist counter — updates live when exam/subject/mode changes
-  useEffect(() => {
-    if (waitlistUnsubRef.current) {
-      waitlistUnsubRef.current()
-      waitlistUnsubRef.current = null
-    }
-    const colName = queueCollectionName(exam, subject, mode)
-    const unsub = onSnapshot(collection(db, colName), snap => {
-      const waiting = snap.docs.filter(d => !d.data().matched).length
-      setWaitlistCount(waiting)
+  useEffect(function() {
+    if (waitlistUnsubRef.current) { waitlistUnsubRef.current(); waitlistUnsubRef.current = null }
+    var col = queueCol(exam, subject, mode)
+    var unsub = onSnapshot(collection(db, col), function(snap) {
+      setWaitlistCount(snap.docs.filter(function(d) { return !d.data().matched }).length)
     })
     waitlistUnsubRef.current = unsub
-    return () => unsub()
+    return function() { unsub() }
   }, [exam, subject, mode])
 
   async function ensureLogin() {
     if (auth.currentUser) return auth.currentUser
-    const res = await signInWithPopup(auth, googleProvider)
-    return res.user
+    return (await signInWithPopup(auth, googleProvider)).user
   }
 
-  function attachOwnDocListener(queueColName, uid) {
-    if (ownDocListenerRef.current) {
-      ownDocListenerRef.current()
-      ownDocListenerRef.current = null
-    }
-
-    const ref = doc(db, queueColName, uid)
-    ownDocListenerRef.current = onSnapshot(ref, async snap => {
+  function attachOwnDocListener(col, uid) {
+    if (ownDocListenerRef.current) { ownDocListenerRef.current(); ownDocListenerRef.current = null }
+    var ref = doc(db, col, uid)
+    ownDocListenerRef.current = onSnapshot(ref, async function(snap) {
       if (!snap.exists()) return
-      const data = snap.data()
-      if (!data) return
-
-      if (data.sessionId && !redirectedRef.current) {
+      var data = snap.data()
+      if (data && data.sessionId && !redirectedRef.current) {
         redirectedRef.current = true
         setStatus('matched')
-        try { await deleteDoc(ref) } catch {}
-        if (queueListenerRef.current) {
-          queueListenerRef.current()
-          queueListenerRef.current = null
-        }
-        router.push(`/session/${data.sessionId}`)
+        try { await deleteDoc(ref) } catch(e) {}
+        if (queueListenerRef.current) { queueListenerRef.current(); queueListenerRef.current = null }
+        router.push('/session/' + data.sessionId)
       }
     })
   }
 
-  async function tryMatch(queueColName, uid, name) {
+  async function tryMatch(col, uid, name) {
     if (matchingRef.current || redirectedRef.current) return
     matchingRef.current = true
-
     try {
-      const queueRef = collection(db, queueColName)
-      const snap = await getDocs(queueRef)
-
-      const candidates = snap.docs
-        .filter(d => {
-          const data = d.data()
-          return (
-            data &&
-            data.uid &&
-            data.uid !== uid &&
-            !data.matched &&
-            data.exam === exam &&
-            data.subject === subject &&
-            data.mode === mode
-          )
+      var snap = await getDocs(collection(db, col))
+      var candidates = snap.docs
+        .filter(function(d) {
+          var data = d.data()
+          return data && data.uid && data.uid !== uid && !data.matched &&
+            data.exam === exam && data.subject === subject && data.mode === mode
         })
-        .sort((a, b) => {
-          // ⚡ PRIORITY QUEUE: paid users at front of candidate list
-          // This means paid users get matched faster when new people join
-          const aPaid = a.data()?.isPaid ? 1 : 0
-          const bPaid = b.data()?.isPaid ? 1 : 0
+        .sort(function(a, b) {
+          var aPaid = a.data().isPaid ? 1 : 0
+          var bPaid = b.data().isPaid ? 1 : 0
           if (bPaid !== aPaid) return bPaid - aPaid
-          // Among same plan tier, match by join time (oldest first)
-          return (a.data()?.queuedAt || 0) - (b.data()?.queuedAt || 0)
+          return (a.data().queuedAt || 0) - (b.data().queuedAt || 0)
         })
 
-      const partnerDoc = candidates[0]
-      if (!partnerDoc) {
-        setStatus('waiting')
-        return
-      }
+      if (!candidates[0]) { setStatus('waiting'); return }
 
-      const partnerRef = doc(db, queueColName, partnerDoc.id)
-      const myRef = doc(db, queueColName, uid)
-      const sessionRef = doc(collection(db, 'sessions'))
+      var partnerRef = doc(db, col, candidates[0].id)
+      var myRef      = doc(db, col, uid)
+      var sessionRef = doc(collection(db, 'sessions'))
 
-      await runTransaction(db, async tx => {
-        const mySnap = await tx.get(myRef)
-        const otherSnap = await tx.get(partnerRef)
-
-        if (!mySnap.exists()) throw new Error('my-queue-missing')
-        if (!otherSnap.exists()) throw new Error('partner-queue-missing')
-
-        const myData = mySnap.data()
-        const otherData = otherSnap.data()
-
-        if (!myData || !otherData) throw new Error('missing-data')
-        if (myData.uid === otherData.uid) throw new Error('self-match')
+      await runTransaction(db, async function(tx) {
+        var mySnap    = await tx.get(myRef)
+        var otherSnap = await tx.get(partnerRef)
+        if (!mySnap.exists() || !otherSnap.exists()) throw new Error('queue-missing')
+        var myData    = mySnap.data()
+        var otherData = otherSnap.data()
+        if (!myData || !otherData || myData.uid === otherData.uid) throw new Error('invalid')
         if (myData.matched || otherData.matched) throw new Error('already-matched')
-
-        const initiatorUid = (myData.queuedAt || 0) <= (otherData.queuedAt || 0) ? myData.uid : otherData.uid
-
+        var initiatorUid = (myData.queuedAt||0) <= (otherData.queuedAt||0) ? myData.uid : otherData.uid
         tx.set(sessionRef, {
-          exam,
-          subject,
-          mode,
-          status: 'active',
-          createdAt: serverTimestamp(),
+          exam, subject, mode, status: 'active', createdAt: serverTimestamp(),
           participantUids: [myData.uid, otherData.uid],
           participants: [
-            { uid: myData.uid, name: myData.name || name || 'You' },
-            { uid: otherData.uid, name: otherData.name || 'Partner' }
+            { uid: myData.uid,    name: myData.name    || name      || 'Student' },
+            { uid: otherData.uid, name: otherData.name  || 'Partner' }
           ],
           initiatorUid
         })
-
-        tx.update(myRef, {
-          matched: true,
-          sessionId: sessionRef.id,
-          matchedWith: { uid: otherData.uid, name: otherData.name || 'Partner' }
-        })
-
-        tx.update(partnerRef, {
-          matched: true,
-          sessionId: sessionRef.id,
-          matchedWith: { uid: myData.uid, name: myData.name || name || 'You' }
-        })
+        tx.update(myRef,      { matched: true, sessionId: sessionRef.id })
+        tx.update(partnerRef, { matched: true, sessionId: sessionRef.id })
       })
-
       setStatus('matched')
-    } catch (err) {
-      console.warn('match transaction failed', err)
-      setStatus('waiting')
-    } finally {
-      matchingRef.current = false
-    }
+    } catch(e) { console.warn('match failed', e); setStatus('waiting') }
+    finally { matchingRef.current = false }
   }
 
   async function startMatchmaking() {
-    const liveStatus = getLiveHoursStatus(liveHours || {})
-    if (!liveStatus.open) {
-      alert(liveStatus.message || 'Live sessions are closed right now.')
-      setStatus('closed')
-      return
-    }
-
+    var liveStatus = getLiveHoursStatus(liveHours || {})
+    if (!liveStatus.open) { alert(liveStatus.message || 'Sessions are closed right now.'); setStatus('closed'); return }
     setStatus('signing-in')
-
-    let user
+    var user
+    try { user = await ensureLogin() }
+    catch(e) { setStatus('error'); alert('Sign-in failed. Please try again.'); return }
     try {
-      user = await ensureLogin()
-    } catch (err) {
-      console.error(err)
-      setStatus('error')
-      alert('Sign-in failed. Please try again.')
-      return
-    }
-
-    try {
-      const profile = await ensureUserProfile(user)
+      var profile = await ensureUserProfile(user)
       setAccountInfo(profile)
-
-      if (profile?.accountStatus === 'banned') {
-        alert('Your account is banned. Contact support.')
-        setStatus('blocked')
+      if (profile && profile.accountStatus === 'banned') { alert('Your account is banned.'); setStatus('blocked'); return }
+      var planId = getEffectivePlanId(profile)
+      isPaidRef.current = planId !== 'free'
+      if (planId === 'free' && remainingForMode(profile, mode) <= 0) {
+        alert('No free sessions left for this mode. Upgrade to continue.')
+        router.push('/plans')
         return
       }
+    } catch(e) { console.warn('profile init failed', e) }
 
-      const planId = getEffectivePlanId(profile)
-      isPaidRef.current = planId !== 'free'
-
-      if (planId === 'free') {
-        const remaining = remainingForMode(profile, mode)
-        if (remaining <= 0) {
-          alert('You have used all your free sessions for this mode. Upgrade to continue studying!')
-          router.push('/plans')
-          return
-        }
-      }
-    } catch (err) {
-      console.warn('profile init failed', err)
-    }
-
-    const uid = user.uid
-    const name = user.displayName || user.email || 'Anonymous'
-    const queueColName = queueCollectionName(exam, subject, mode)
-    const myRef = doc(db, queueColName, uid)
-
-    myQueueRef.current = myRef
-    redirectedRef.current = false
-    matchingRef.current = false
+    var uid     = user.uid
+    var name    = user.displayName || user.email || 'Student'
+    var col     = queueCol(exam, subject, mode)
+    var myRef   = doc(db, col, uid)
+    myQueueRef.current = myRef; redirectedRef.current = false; matchingRef.current = false
 
     try {
-      const existing = await getDoc(myRef)
+      var existing = await getDoc(myRef)
       if (existing.exists()) {
-        const data = existing.data()
-        if (data?.sessionId && data?.matched) {
-          router.push(`/session/${data.sessionId}`)
-          return
-        }
+        var d = existing.data()
+        if (d && d.sessionId && d.matched) { router.push('/session/' + d.sessionId); return }
       }
+      await setDoc(myRef, { uid, name, exam, subject, mode, matched: false, sessionId: null, queuedAt: Date.now(), createdAt: serverTimestamp(), isPaid: isPaidRef.current })
+    } catch(e) { setStatus('error'); alert('Failed to join queue.'); return }
 
-      await setDoc(myRef, {
-        uid,
-        name,
-        exam,
-        subject,
-        mode,
-        matched: false,
-        sessionId: null,
-        queuedAt: Date.now(),
-        createdAt: serverTimestamp(),
-        isPaid: isPaidRef.current   // ← Priority flag for queue sorting
-      })
-    } catch (err) {
-      console.error('queue create failed', err)
-      setStatus('error')
-      alert('Failed to join queue. Please try again.')
-      return
-    }
-
-    attachOwnDocListener(queueColName, uid)
-
-    if (queueListenerRef.current) {
-      queueListenerRef.current()
-      queueListenerRef.current = null
-    }
-
-    queueListenerRef.current = onSnapshot(collection(db, queueColName), async () => {
-      if (redirectedRef.current) return
-      await tryMatch(queueColName, uid, name)
+    attachOwnDocListener(col, uid)
+    if (queueListenerRef.current) { queueListenerRef.current(); queueListenerRef.current = null }
+    queueListenerRef.current = onSnapshot(collection(db, col), async function() {
+      if (!redirectedRef.current) await tryMatch(col, uid, name)
     })
-
     setStatus('searching')
-    await tryMatch(queueColName, uid, name)
+    await tryMatch(col, uid, name)
   }
 
   async function cancelQueue() {
-    if (!myQueueRef.current) {
-      setStatus('idle')
-      return
-    }
-    try { await deleteDoc(myQueueRef.current) } catch {}
-
-    if (queueListenerRef.current) {
-      queueListenerRef.current()
-      queueListenerRef.current = null
-    }
-    if (ownDocListenerRef.current) {
-      ownDocListenerRef.current()
-      ownDocListenerRef.current = null
-    }
-
-    myQueueRef.current = null
-    matchingRef.current = false
-    redirectedRef.current = false
+    if (myQueueRef.current) try { await deleteDoc(myQueueRef.current) } catch(e) {}
+    if (queueListenerRef.current) { queueListenerRef.current(); queueListenerRef.current = null }
+    if (ownDocListenerRef.current) { ownDocListenerRef.current(); ownDocListenerRef.current = null }
+    myQueueRef.current = null; matchingRef.current = false; redirectedRef.current = false
     setStatus('idle')
   }
 
-  useEffect(() => {
-    const onUnload = () => {
-      if (myQueueRef.current) deleteDoc(myQueueRef.current).catch(() => {})
-    }
+  useEffect(function() {
+    function onUnload() { if (myQueueRef.current) deleteDoc(myQueueRef.current).catch(function() {}) }
     window.addEventListener('beforeunload', onUnload)
-    return () => {
+    return function() {
       window.removeEventListener('beforeunload', onUnload)
       if (queueListenerRef.current) queueListenerRef.current()
       if (ownDocListenerRef.current) ownDocListenerRef.current()
       if (waitlistUnsubRef.current) waitlistUnsubRef.current()
-      if (myQueueRef.current) deleteDoc(myQueueRef.current).catch(() => {})
+      if (myQueueRef.current) deleteDoc(myQueueRef.current).catch(function() {})
     }
   }, [])
 
-  const liveStatus = getLiveHoursStatus(liveHours || {})
-  const isPaid = isPaidRef.current
-  const creditsLeft = accountInfo ? remainingForMode(accountInfo, mode) : null
-  const lowCredits = creditsLeft !== null && !isPaid && creditsLeft <= 3
-  const isSearching = status === 'searching' || status === 'signing-in'
+  var liveStatus  = getLiveHoursStatus(liveHours || {})
+  var creditsLeft = accountInfo ? remainingForMode(accountInfo, mode) : null
+  var lowCredits  = creditsLeft !== null && !isPaidRef.current && creditsLeft <= 3
+  var isSearching = status === 'searching' || status === 'signing-in'
+
+  var sel = {
+    padding: '10px 12px', width: '100%', borderRadius: 8,
+    border: '1px solid ' + border, fontSize: 15,
+    background: white, color: text, outline: 'none',
+    fontFamily: 'DM Sans, system-ui, sans-serif'
+  }
 
   return (
-    <div style={{ maxWidth: 560, margin: '32px auto', padding: 20, fontFamily: 'system-ui, sans-serif' }}>
-      <h1 style={{ fontSize: 30, marginBottom: 4, fontWeight: 900 }}>Join a study session</h1>
-      <p style={{ color: '#666', marginTop: 0, marginBottom: 20 }}>
-        Same exam + subject + mode only. Get matched in seconds.
-      </p>
+    <div style={{ minHeight: '100vh', background: bg, fontFamily: 'DM Sans, system-ui, sans-serif' }}>
+      <div style={{ maxWidth: 520, margin: '0 auto', padding: '72px 24px 60px' }}>
 
-      {/* Live status banner */}
-      <div style={{
-        marginBottom: 12, padding: '12px 14px', borderRadius: 12,
-        background: liveStatus.open ? '#ecfdf5' : '#fff7ed',
-        border: `1px solid ${liveStatus.open ? '#6ee7b7' : '#fcd34d'}`,
-        fontWeight: 600
-      }}>
-        {liveStatus.open ? '🟢' : '🔴'}{' '}
-        {liveHours ? liveStatus.message : 'Checking live hours...'}
-      </div>
+        <Link href="/" style={{ fontSize: 13, color: text3, textDecoration: 'none', display: 'inline-block', marginBottom: 28, fontFamily: 'Lora, Georgia, serif', fontWeight: 600 }}>
+          FocusDuo
+        </Link>
 
-      {/* WAITLIST COUNTER — shows demand before login, creates urgency */}
-      <div style={{
-        marginBottom: 12, padding: '12px 14px', borderRadius: 12,
-        background: waitlistCount > 0 ? '#eff6ff' : '#f8fafc',
-        border: `1px solid ${waitlistCount > 0 ? '#93c5fd' : '#e5e7eb'}`
-      }}>
-        {waitlistCount > 0
-          ? <span>👥 <strong>{waitlistCount} student{waitlistCount === 1 ? '' : 's'}</strong> waiting for a {subject} partner right now</span>
-          : <span>📚 Be the first to join the {exam} {subject} queue</span>
-        }
-      </div>
+        <h1 style={{ fontFamily: 'Lora, Georgia, serif', fontSize: 'clamp(24px,4vw,34px)', fontWeight: 600, color: text, marginBottom: 8, letterSpacing: '-0.02em', lineHeight: 1.1 }}>
+          Find a study partner
+        </h1>
+        <p style={{ fontSize: 15, color: text2, lineHeight: 1.65, marginBottom: 32 }}>
+          Pick your subject and get matched with a student studying the same thing.
+        </p>
 
-      {/* PRIORITY BADGE — shows paid users they have an advantage */}
-      {isPaid && (
-        <div style={{
-          marginBottom: 12, padding: '10px 14px', borderRadius: 12,
-          background: '#fefce8', border: '1px solid #fde047',
-          fontWeight: 700, color: '#854d0e'
-        }}>
-          ⚡ Priority matching active — you get matched before free users
-        </div>
-      )}
-
-      {/* LOW CREDITS WARNING — urgency to upgrade */}
-      {lowCredits && (
-        <div style={{
-          marginBottom: 12, padding: '12px 14px', borderRadius: 12,
-          background: '#fef2f2', border: '1px solid #fca5a5'
-        }}>
-          ⚠️ Only <strong>{creditsLeft} session{creditsLeft === 1 ? '' : 's'}</strong> left.{' '}
-          <Link href="/plans" style={{ color: '#dc2626', fontWeight: 700, textDecoration: 'underline' }}>
-            Upgrade for ₹99 →
-          </Link>
-        </div>
-      )}
-
-      {/* Account credits summary */}
-      {accountInfo && (
-        <div style={{
-          marginBottom: 16, padding: '10px 14px', borderRadius: 12,
-          background: '#f8fafc', border: '1px solid #e5e7eb', fontSize: 14,
-          display: 'flex', gap: 12, flexWrap: 'wrap'
-        }}>
-          <span>📋 <strong>{accountInfo.planLabel || 'Free'}</strong></span>
-          <span>1-on-1 left: <strong>{accountInfo.freeOneOnOneRemaining ?? 10}</strong></span>
-          <span>Group left: <strong>{accountInfo.freeGroupRemaining ?? 10}</strong></span>
-        </div>
-      )}
-
-      {/* Selectors */}
-      <div style={{ display: 'grid', gap: 14 }}>
-        <label>
-          <div style={{ fontWeight: 700, marginBottom: 5 }}>Exam</div>
-          <select value={exam} onChange={e => setExam(e.target.value)}
-            disabled={isSearching}
-            style={{ padding: '10px 12px', width: '100%', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 15 }}>
-            <option>JEE</option>
-            <option>NEET</option>
-          </select>
-        </label>
-
-        <label>
-          <div style={{ fontWeight: 700, marginBottom: 5 }}>Subject</div>
-          <select value={subject} onChange={e => setSubject(e.target.value)}
-            disabled={isSearching}
-            style={{ padding: '10px 12px', width: '100%', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 15 }}>
-            <option>Physics</option>
-            <option>Chemistry</option>
-            <option>Math</option>
-            <option>Biology</option>
-          </select>
-        </label>
-
-        <label>
-          <div style={{ fontWeight: 700, marginBottom: 5 }}>Mode</div>
-          <select value={mode} onChange={e => setMode(e.target.value)}
-            disabled={isSearching}
-            style={{ padding: '10px 12px', width: '100%', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 15 }}>
-            <option value="one-on-one">1-on-1 (10 free sessions)</option>
-            <option value="group">Group — max 5 (10 free sessions)</option>
-          </select>
-        </label>
-
-        <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
-          <button
-            onClick={startMatchmaking}
-            disabled={isSearching || !liveStatus.open}
-            style={{
-              flex: 1, padding: '13px 20px', fontWeight: 800, fontSize: 16,
-              background: liveStatus.open ? (isSearching ? '#3b82f6' : '#2563eb') : '#94a3b8',
-              color: '#fff', border: 'none', borderRadius: 12,
-              cursor: (liveStatus.open && !isSearching) ? 'pointer' : 'not-allowed',
-              transition: 'opacity 0.2s'
-            }}
-          >
-            {status === 'signing-in' ? '⏳ Signing in...' :
-             status === 'searching' ? '🔍 Finding partner...' :
-             'Start matchmaking'}
-          </button>
-
-          <button onClick={cancelQueue}
-            style={{
-              padding: '13px 16px', borderRadius: 12, fontWeight: 700,
-              border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer', fontSize: 15
-            }}>
-            Cancel
-          </button>
+        {/* Live status */}
+        <div style={{ marginBottom: 10, padding: '10px 14px', borderRadius: 8, border: '1px solid ' + border, background: white, fontSize: 13, color: liveStatus.open ? '#166534' : '#92400E' }}>
+          {liveStatus.open ? 'Sessions are open now.' : (liveHours ? liveStatus.message : 'Checking session hours...')}
         </div>
 
-        {/* Status display */}
-        <div style={{
-          padding: '14px 16px', borderRadius: 12,
-          background: status === 'matched' ? '#ecfdf5' : '#f8fafc',
-          border: `1px solid ${status === 'matched' ? '#6ee7b7' : '#e5e7eb'}`
-        }}>
-          <strong>Status: </strong>
-          {status === 'idle' && 'Ready — pick your options and start'}
-          {status === 'signing-in' && '⏳ Signing in with Google...'}
-          {status === 'searching' && '🔍 Searching for a match...'}
-          {status === 'waiting' && `⏳ Waiting for a partner in ${exam} • ${subject}. You'll be matched as soon as someone joins.`}
-          {status === 'matched' && '✅ Match found! Joining your session now...'}
-          {status === 'error' && '❌ Something went wrong. Try again.'}
-          {status === 'closed' && '🔴 Sessions are closed right now. Come back later.'}
-          {status === 'blocked' && '🚫 Account blocked. Contact support.'}
+        {/* Waitlist */}
+        <div style={{ marginBottom: 20, padding: '10px 14px', borderRadius: 8, border: '1px solid ' + border, background: white, fontSize: 13, color: text2 }}>
+          {waitlistCount > 0
+            ? waitlistCount + ' student' + (waitlistCount === 1 ? '' : 's') + ' waiting in ' + exam + ' ' + subject + ' now.'
+            : 'No one in ' + exam + ' ' + subject + ' yet. Be the first.'}
         </div>
 
-        {/* Free plan info */}
-        {!accountInfo && (
-          <div style={{
-            padding: '12px 14px', borderRadius: 12,
-            background: '#f0f9ff', border: '1px solid #bae6fd', fontSize: 14, lineHeight: 1.7
-          }}>
-            <strong>Free plan:</strong> 10 one-on-one sessions + 10 group sessions.
-            First 2 min are for chapter selection — leave early and your credit is not used.
-            Sessions end after 30 min.{' '}
-            <Link href="/plans" style={{ color: '#0284c7', fontWeight: 700 }}>See paid plans →</Link>
+        {/* Low credits */}
+        {lowCredits ? (
+          <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 8, border: '1px solid #FCA5A5', background: '#FEF2F2', fontSize: 13, color: '#991B1B' }}>
+            {creditsLeft} session{creditsLeft === 1 ? '' : 's'} left.{' '}
+            <Link href="/plans" style={{ color: '#991B1B', fontWeight: 700, textDecoration: 'underline' }}>Upgrade</Link>
           </div>
-        )}
+        ) : null}
+
+        {/* Credits summary */}
+        {accountInfo ? (
+          <div style={{ marginBottom: 20, padding: '10px 14px', borderRadius: 8, border: '1px solid ' + border, background: white, fontSize: 13, color: text2, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 600, color: text }}>{accountInfo.planLabel || 'Free'}</span>
+            <span>1-on-1: {accountInfo.freeOneOnOneRemaining !== undefined ? accountInfo.freeOneOnOneRemaining : 10} left</span>
+            <span>Group: {accountInfo.freeGroupRemaining !== undefined ? accountInfo.freeGroupRemaining : 10} left</span>
+            {isPaidRef.current ? <span style={{ color: '#166534', fontWeight: 600 }}>Priority active</span> : null}
+          </div>
+        ) : null}
+
+        {/* Selectors */}
+        <div style={{ display: 'grid', gap: 14, marginBottom: 20 }}>
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 600, color: text2, marginBottom: 6, display: 'block', letterSpacing: '0.02em' }}>Exam</label>
+            <select value={exam} onChange={function(e) { setExam(e.target.value) }} disabled={isSearching} style={sel}>
+              <option>JEE</option>
+              <option>NEET</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 600, color: text2, marginBottom: 6, display: 'block', letterSpacing: '0.02em' }}>Subject</label>
+            <select value={subject} onChange={function(e) { setSubject(e.target.value) }} disabled={isSearching} style={sel}>
+              <option>Physics</option>
+              <option>Chemistry</option>
+              <option>Math</option>
+              <option>Biology</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 600, color: text2, marginBottom: 6, display: 'block', letterSpacing: '0.02em' }}>Mode</label>
+            <select value={mode} onChange={function(e) { setMode(e.target.value) }} disabled={isSearching} style={sel}>
+              <option value="one-on-one">1-on-1</option>
+              <option value="group">Group (up to 5)</option>
+            </select>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              onClick={startMatchmaking}
+              disabled={isSearching || !liveStatus.open}
+              style={{
+                flex: 1, padding: '12px 20px', fontWeight: 600, fontSize: 15,
+                background: (!isSearching && liveStatus.open) ? dark : border,
+                color: (!isSearching && liveStatus.open) ? white : text3,
+                border: 'none', borderRadius: 8,
+                cursor: (!isSearching && liveStatus.open) ? 'pointer' : 'not-allowed',
+                fontFamily: 'DM Sans, system-ui, sans-serif', transition: 'background 0.15s'
+              }}
+            >
+              {status === 'signing-in' ? 'Signing in...' : status === 'searching' ? 'Searching...' : 'Find a partner'}
+            </button>
+            <button
+              onClick={cancelQueue}
+              style={{ padding: '12px 16px', borderRadius: 8, fontWeight: 600, border: '1px solid ' + border, background: white, color: text2, cursor: 'pointer', fontSize: 14, fontFamily: 'DM Sans, system-ui, sans-serif' }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+
+        {/* Status */}
+        <div style={{ padding: '12px 14px', borderRadius: 8, border: '1px solid ' + border, background: white, fontSize: 14, color: text2, marginBottom: 14 }}>
+          {status === 'idle'       && 'Ready. Select your options above and click find.'}
+          {status === 'signing-in' && 'Signing in with Google...'}
+          {status === 'searching'  && 'Searching for a match...'}
+          {status === 'waiting'    && 'Waiting for a partner in ' + exam + ' ' + subject + '. You will be matched as soon as someone joins.'}
+          {status === 'matched'    && 'Match found. Joining your session now...'}
+          {status === 'error'      && 'Something went wrong. Please try again.'}
+          {status === 'closed'     && 'Sessions are closed right now. Check back later.'}
+          {status === 'blocked'    && 'Account blocked. Contact support.'}
+        </div>
+
+        {/* Free plan note */}
+        {!accountInfo ? (
+          <div style={{ padding: '12px 14px', borderRadius: 8, border: '1px solid ' + border, background: white, fontSize: 13, color: text2, lineHeight: 1.7 }}>
+            Free plan: 10 one-on-one and 10 group sessions. First 2 minutes of every session are free to leave — no credit used. Sessions end at 30 minutes.{' '}
+            <Link href="/plans" style={{ color: text, fontWeight: 600, textDecoration: 'underline' }}>See Pro plans</Link>
+          </div>
+        ) : null}
       </div>
     </div>
   )
-          }
-        
+                       }
